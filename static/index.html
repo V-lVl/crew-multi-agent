@@ -2071,7 +2071,7 @@ function renderMCPBody(servers, agentTools) {
   const statusColor = {running:'#4a7', stopped:'#888', dead:'#c33', starting:'#DEAA0C'};
   let html = `
     <div style="margin-bottom:12px;font-size:13px;color:#555">
-      MCP 让 agent 能调用外部工具（读文件、抓网页、执行命令等）。开关 server 会立即生效。
+      MCP 让 agent 通过标准协议调用外部工具（读文件、抓 URL、执行命令等）。开关 server 会立即生效。
     </div>
     <table style="width:100%;border-collapse:collapse">
       <thead>

@@ -513,7 +513,7 @@ DELETE /api/agents/custom/<name>     删除
 
 ## 🔧 MCP · Model Context Protocol（v2.0+）
 
-从 v2.0 起，agent 可以**调用工具**——读文件、抓网页、执行命令、查时间等。基于 Anthropic 提出的 MCP 协议标准，可对接任何遵循协议的外部 server。
+v2.0 引入 MCP 协议支持，为 agent 提供标准化的外部工具调用接口。可对接任何遵循 MCP 协议的 server。
 
 ### 开箱 4 个内置 Server（Python，零外部依赖）
 
@@ -584,7 +584,7 @@ Ash: 当前北京时间是 14:42:55。
 
 ## 🛡️ 运行时保障（v1.7+）
 
-从 v1.7 起，运行时能力从"能跑"升级到"生产可用"：
+v1.7 引入运行时能力增强：
 
 ### 上下文与成本
 

@@ -517,7 +517,7 @@ DELETE /api/agents/custom/<name>     delete
 
 ## 🔧 MCP · Model Context Protocol (v2.0+)
 
-Starting v2.0, agents can **call tools** — read files, fetch URLs, run commands, check time, etc. Based on Anthropic's MCP standard; compatible with any conforming external server.
+v2.0 adds MCP protocol support, providing a standardized interface for agents to call external tools. Compatible with any MCP-conforming server.
 
 ### 4 Built-in Servers (Python, zero external deps)
 
@@ -588,7 +588,7 @@ Community list: [modelcontextprotocol.io/servers](https://modelcontextprotocol.i
 
 ## 🛡️ Runtime Hardening (v1.7+)
 
-Starting v1.7, Crew moves from "it runs" to "production-ready":
+v1.7 introduces runtime capability enhancements:
 
 ### Context & cost
 
