@@ -169,7 +169,7 @@ It addresses three concrete engineering gaps:
 │                                                                 │
 │  Data on disk:  %APPDATA%\Crew\                                 │
 │    ├─ config.json          # prefs + provider + selected CLI    │
-│    ├─ .env                 # API keys (never pushed to GitHub)   │
+│    ├─ .env                 # API keys (plaintext, local only)    │
 │    ├─ team.db              # SQLite: topics / msgs / approvals   │
 │    ├─ dynamic_agents.json  # runtime-hired teammates             │
 │    └─ launcher.log         # boot log                            │

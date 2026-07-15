@@ -168,7 +168,7 @@
 │                                                                 │
 │  数据落盘：%APPDATA%\Crew\                                       │
 │    ├─ config.json          # 用户偏好 + provider + 选中 CLI       │
-│    ├─ .env                 # API key（永不上传 GitHub）            │
+│    ├─ .env                 # API key（本地明文存放）                │
 │    ├─ team.db              # SQLite: 话题/消息/审批                │
 │    ├─ dynamic_agents.json  # Foreman 动态招入的同事               │
 │    └─ launcher.log         # 启动日志                             │
