@@ -862,6 +862,8 @@
       <div class="sub" id="header-sub">5 位同事在场 · drafted by ark</div>
     </div>
     <div class="right">
+      <!-- 今日用量徽章 -->
+      <button class="btn mini" id="usage-btn" title="今日 LLM 用量" style="font-size:11px">💰 —</button>
       <!-- 设置按钮：改 provider/model/key -->
       <button class="btn mini" id="settings-btn" title="设置 · provider / model / API key">⚙</button>
       <!-- 同事管理按钮：创建 / 编辑 / 删除自定义同事 -->
@@ -884,8 +886,16 @@
   </div>
   <div id="messages"></div>
   <div id="typings"></div>
+  <!-- ⏹ 停止按钮：只在有 agent 在思考时显示 -->
+  <div id="stop-bar" style="display:none;padding:6px 12px;text-align:center">
+    <button id="stop-btn" class="btn" style="background:#c33;color:#fff;border-color:#911">⏹ 停止</button>
+  </div>
   <div class="composer-wrap">
+    <!-- 附件预览行：有附件时才显示 -->
+    <div id="attachment-strip" style="display:none;padding:6px 0;font-size:12px"></div>
     <div class="composer">
+      <input type="file" id="file-input" style="display:none" accept="image/*,.txt,.md,.json,.csv,.log,.py,.js,.ts,.html,.css,.yaml,.yml,.xml" multiple>
+      <button class="btn" id="attach-btn" title="上传图片/文本文件" style="padding:0 10px">📎</button>
       <textarea id="input" rows="1" placeholder="Type something…"></textarea>
       <button class="btn primary" id="send">SEND ↵</button>
     </div>
@@ -970,6 +980,8 @@
 const messagesEl = document.getElementById('messages');
 const typingsEl = document.getElementById('typings');
 const inputEl = document.getElementById('input');
+// 附件上传队列（发送时带上，发完清空）
+let PENDING_ATTACHMENTS = [];
 const sendBtn = document.getElementById('send');
 const agentsEl = document.getElementById('agents');
 const topicsEl = document.getElementById('topics');
@@ -1027,20 +1039,22 @@ async function refreshTopics() {
 
 function loadTopic(id, title) {
   CURRENT_TITLE = title;
-  ws.send(JSON.stringify({action:'load_topic', topic_id:id}));
+  wsSend({action:'load_topic', topic_id:id});
 }
 document.getElementById('new-topic').onclick =
 document.getElementById('new-topic-2').onclick = () => {
   CURRENT_TITLE = null;
-  ws.send(JSON.stringify({action:'new_topic'}));
+  wsSend({action:'new_topic'});
 };
 
 function renderAgents() {
   agentsEl.innerHTML = AGENTS.map(a => {
     const on = ROSTER.includes(a.name);
+    const safeEmoji = escapeHTML(String(a.emoji || '●'));
+    const safeColor = escapeHTML(String(a.color || '#6b7280'));
     return `
-      <div class="agent-item ${on?'on':'off'}" data-name="${a.name}">
-        <div class="avatar" style="background:${a.color}"><img src="/static/avatars/${encodeURIComponent(a.name)}.svg" onerror="this.replaceWith(document.createTextNode('${a.emoji}'))" alt="${a.emoji}"></div>
+      <div class="agent-item ${on?'on':'off'}" data-name="${escapeAttr(a.name)}">
+        <div class="avatar" style="background:${safeColor}"><img src="/static/avatars/${encodeURIComponent(a.name)}.svg" onerror="this.replaceWith(document.createTextNode(this.getAttribute('data-fallback')))" data-fallback="${safeEmoji}" alt="${safeEmoji}"></div>
         <div class="info">
           <div class="name">${escapeHTML(a.name)}</div>
           <div class="role">${escapeHTML(a.role)}</div>
@@ -1060,7 +1074,7 @@ function renderAgents() {
       } else {
         next = [...ROSTER, n];
       }
-      ws.send(JSON.stringify({action:'set_roster', roster: next}));
+      wsSend({action:'set_roster', roster: next});
     };
     el.oncontextmenu = e => {
       e.preventDefault();
@@ -1071,7 +1085,7 @@ function renderAgents() {
   });
 }
 document.getElementById('all-on').onclick = () => {
-  ws.send(JSON.stringify({action:'set_roster', roster: AGENTS.map(a=>a.name)}));
+  wsSend({action:'set_roster', roster: AGENTS.map(a=>a.name)});
 };
 
 function renderQuicks() {
@@ -1087,38 +1101,106 @@ function renderQuicks() {
 }
 
 const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-const ws = new WebSocket(`${proto}://${location.host}/ws`);
-ws.onopen = async () => {
-  await initAgents();
-  await refreshTopics();
-};
-ws.onmessage = ev => {
-  const m = JSON.parse(ev.data);
-  if (m.type === 'state') {
-    ROSTER = m.roster || [];
-    CURRENT_TOPIC = m.topic_id;
-    renderAgents(); updateHeader(); refreshTopics();
-  } else if (m.type === 'switched') {
-    ROSTER = m.roster || ROSTER;
-    CURRENT_TOPIC = m.topic_id;
-    messagesEl.innerHTML = ''; typingsEl.innerHTML = '';
-    typingMap.clear(); LAST_AUTHOR = null;
-    renderAgents(); updateHeader(); refreshTopics();
-  } else if (m.type === 'message') {
-    renderMessage(m);
-    if (m.role === 'agent') refreshTopics();
-  } else if (m.type === 'typing') {
-    renderTyping(m);
-  } else if (m.type === 'topic_updated') {
-    refreshTopics();
+let ws = null;
+let wsReconnectDelay = 1000;  // 1s → 2s → 4s → ... → 30s
+let wsReconnectTimer = null;
+let wsBanner = null;  // 断线提示条
+
+function showWsBanner(text) {
+  if (!wsBanner) {
+    wsBanner = document.createElement('div');
+    wsBanner.className = 'ws-banner';
+    wsBanner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#c33;color:#fff;padding:6px;text-align:center;font-size:12px;z-index:9999';
+    document.body.appendChild(wsBanner);
   }
-};
-ws.onclose = () => {
-  const div = document.createElement('div');
-  div.className = 'msg system';
-  div.innerHTML = `<div class="content">连接已断开，刷新页面重连</div>`;
-  messagesEl.appendChild(div);
-};
+  wsBanner.textContent = text;
+  wsBanner.style.display = 'block';
+}
+function hideWsBanner() {
+  if (wsBanner) wsBanner.style.display = 'none';
+}
+
+function connectWs() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = async () => {
+    wsReconnectDelay = 1000;  // 重置退避
+    hideWsBanner();
+    await initAgents();
+    await refreshTopics();
+    // 如果当前有话题，重连后重新拉一次消息（防丢消息）
+    if (CURRENT_TOPIC) {
+      try {
+        const r = await fetch(`/api/topics/${CURRENT_TOPIC}/messages`);
+        if (r.ok) {
+          const d = await r.json();
+          messagesEl.innerHTML = ''; typingsEl.innerHTML = '';
+          typingMap.clear(); LAST_AUTHOR = null;
+          (d.messages || []).forEach(m => renderMessage(m));
+        }
+      } catch(e) { /* ignore */ }
+    }
+  };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'state') {
+      ROSTER = m.roster || [];
+      CURRENT_TOPIC = m.topic_id;
+      renderAgents(); updateHeader(); refreshTopics();
+    } else if (m.type === 'switched') {
+      ROSTER = m.roster || ROSTER;
+      CURRENT_TOPIC = m.topic_id;
+      messagesEl.innerHTML = ''; typingsEl.innerHTML = '';
+      typingMap.clear(); LAST_AUTHOR = null;
+      renderAgents(); updateHeader(); refreshTopics();
+    } else if (m.type === 'message') {
+      renderMessage(m);
+      if (m.role === 'agent') refreshTopics();
+    } else if (m.type === 'typing') {
+      renderTyping(m);
+    } else if (m.type === 'message_removed') {
+      // regenerate 时：删掉最后一条 agent 消息
+      const msgs = messagesEl.querySelectorAll('.msg');
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].dataset.ts && parseFloat(msgs[i].dataset.ts) === m.ts) {
+          msgs[i].remove();
+          break;
+        }
+      }
+    } else if (m.type === 'topic_updated') {
+      refreshTopics();
+    }
+  };
+  ws.onclose = () => {
+    const secs = Math.round(wsReconnectDelay / 1000);
+    showWsBanner(`连接已断开，${secs} 秒后自动重连…`);
+    wsReconnectTimer = setTimeout(() => {
+      wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
+      connectWs();
+    }, wsReconnectDelay);
+  };
+  ws.onerror = () => { /* onclose 会接手 */ };
+}
+
+// 供全局调用（替代原来的 ws.send）
+function wsSend(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(typeof payload === 'string' ? payload : JSON.stringify(payload));
+    return true;
+  }
+  showWsBanner('未连接，无法发送。等待自动重连…');
+  return false;
+}
+
+// 网络恢复时立即尝试重连
+window.addEventListener('online', () => {
+  if (ws && ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) {
+    wsReconnectDelay = 1000;
+    connectWs();
+  }
+});
+
+connectWs();
 
 function updateHeader() {
   if (CURRENT_TOPIC && CURRENT_TITLE) {
@@ -1171,16 +1253,32 @@ function renderMessage(m) {
   const ts = formatTime(m.ts);
 
   div.className = 'msg' + (sameAuthor ? ' same-author' : '');
+  if (m.ts) div.dataset.ts = m.ts;
+  const safeEmoji = escapeHTML(String(emoji || '')).replace(/'/g, '&#39;');
+  const regenBtn = (m.role === 'agent') ? `<button class="msg-regen" title="重新生成" style="margin-left:6px;font-size:11px;padding:0 4px;cursor:pointer;background:none;border:1px solid #ccc">🔄</button>` : '';
   div.innerHTML = `
-    <div class="avatar${isMe?' me':''}" style="background:${color}">${isMe ? emoji : `<img src="/static/avatars/${encodeURIComponent(m.name)}.svg" onerror="this.replaceWith(document.createTextNode('${emoji}'))" alt="${emoji}">`}</div>
+    <div class="avatar${isMe?' me':''}" style="background:${color}">${isMe ? safeEmoji : `<img src="/static/avatars/${encodeURIComponent(m.name)}.svg" onerror="this.replaceWith(document.createTextNode(this.getAttribute('data-fallback')))" data-fallback="${safeEmoji}" alt="${safeEmoji}">`}</div>
     <div class="body">
       <div class="head">
         <span class="name">${escapeHTML(m.name)}</span>
         ${title ? `<span class="tag">${escapeHTML(title)}</span>` : ''}
         <span class="ts">${ts}</span>
+        ${regenBtn}
       </div>
       <div class="content">${renderContent(m.content)}</div>
     </div>`;
+  if (m.role === 'agent') {
+    const btn = div.querySelector('.msg-regen');
+    if (btn) btn.onclick = () => {
+      // 只对"最后一条" agent 消息重来
+      const allMsgs = messagesEl.querySelectorAll('.msg');
+      if (allMsgs[allMsgs.length - 1] !== div) {
+        alert('只能重新生成最后一条消息');
+        return;
+      }
+      wsSend({action: 'regenerate'});
+    };
+  }
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -1189,24 +1287,36 @@ function renderTyping(m) {
   const existing = typingMap.get(m.name);
   if (!m.on) {
     if (existing) { existing.remove(); typingMap.delete(m.name); }
+    // typing 全部结束 → 隐藏 stop bar
+    if (typingMap.size === 0) {
+      document.getElementById('stop-bar').style.display = 'none';
+    }
     return;
   }
   if (existing) return;
   const div = document.createElement('div');
   div.className = 'typing';
+  const safeEmoji = escapeHTML(String(m.emoji || '💬'));
+  const safeColor = escapeHTML(String(m.color || '#dcd3bc'));
   div.innerHTML = `
-    <div class="mini-avatar" style="background:${m.color || '#dcd3bc'}">${m.emoji || '💬'}</div>
+    <div class="mini-avatar" style="background:${safeColor}">${safeEmoji}</div>
     <span><b>${escapeHTML(m.name)}</b> 正在输入</span>
     <span class="dots"><span></span><span></span><span></span></span>`;
   typingsEl.appendChild(div);
   typingMap.set(m.name, div);
+  // typing 有人 → 显示 stop bar
+  document.getElementById('stop-bar').style.display = 'block';
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function send() {
   const text = inputEl.value.trim();
-  if (!text || ws.readyState !== 1) return;
-  ws.send(JSON.stringify({ action: 'send', user: '我', content: text, channel: (typeof CHANNEL !== 'undefined' ? CHANNEL : 'team') }));
+  if (!text && PENDING_ATTACHMENTS.length === 0) return;
+  if (!wsSend({ action: 'send', user: '我', content: text,
+                attachments: PENDING_ATTACHMENTS,
+                channel: (typeof CHANNEL !== 'undefined' ? CHANNEL : 'team') })) return;
+  PENDING_ATTACHMENTS = [];
+  renderAttachmentStrip();
   inputEl.value = '';
   inputEl.style.height = 'auto';
 }
@@ -1405,6 +1515,19 @@ async function openOnboard(c) {
       <div>
         <div class="ob-title">权限模式</div>
         <div class="ob-desc">默认「平衡」——只在敏感操作时问你；随时可在右上角改</div>
+      </div>
+    </div>
+    <div class="ob-item">
+      <span class="ob-check">💡</span>
+      <div>
+        <div class="ob-title">怎么和团队说话</div>
+        <div class="ob-desc" style="line-height:1.6">
+          · 直接发消息：Foreman 自动决定让谁回应<br>
+          · <code>@Ash</code>：单独找 Ash 一个人回应<br>
+          · <code>/discuss 议题</code>：全员讨论<br>
+          · 📎 按钮或拖入图片：给视觉模型看图（GPT-4o、Claude 3.5+ 支持）<br>
+          · ⏹ 停止 / 🔄 重来：控制正在生成的回复
+        </div>
       </div>
     </div>
   `;
@@ -1698,14 +1821,14 @@ async function openSettings() {
       customList.innerHTML = customs.map(a => `
         <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#fff9e8;margin-bottom:4px;border:1px solid #ccc;font-size:12px">
           <div style="flex:1">
-            <b>${a.name}</b> <span style="color:#666">(id: ${a.id})</span>
-            <div style="font-family:monospace;color:#666;font-size:11px;margin-top:2px">${a.command} ${a.args_template}</div>
-            <div style="font-size:11px;color:${a.installed ? '#2a7d2a' : '#c33'}">${a.installed ? '✓ 探测到：' + a.path : '✗ 未找到'}</div>
-            <div class="ca-test-result" data-for="${a.id}" style="font-size:11px;color:#555;margin-top:4px"></div>
+            <b>${escapeHTML(a.name)}</b> <span style="color:#666">(id: ${escapeHTML(a.id)})</span>
+            <div style="font-family:monospace;color:#666;font-size:11px;margin-top:2px">${escapeHTML(a.command)} ${escapeHTML(a.args_template || '')}</div>
+            <div style="font-size:11px;color:${a.installed ? '#2a7d2a' : '#c33'}">${a.installed ? '✓ 探测到：' + escapeHTML(a.path || '') : '✗ 未找到'}</div>
+            <div class="ca-test-result" data-for="${escapeAttr(a.id)}" style="font-size:11px;color:#555;margin-top:4px"></div>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
-            <button type="button" data-run="${a.id}" style="font-size:11px;padding:2px 8px;cursor:pointer">试跑</button>
-            <button type="button" data-del="${a.id}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
+            <button type="button" data-run="${escapeAttr(a.id)}" style="font-size:11px;padding:2px 8px;cursor:pointer">试跑</button>
+            <button type="button" data-del="${escapeAttr(a.id)}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
           </div>
         </div>
       `).join('');
@@ -1828,6 +1951,129 @@ async function openSettings() {
 
 document.getElementById('settings-btn').onclick = openSettings;
 
+// ─── 附件上传 ────────────────────────────
+const attachBtn = document.getElementById('attach-btn');
+const fileInput = document.getElementById('file-input');
+const attachStrip = document.getElementById('attachment-strip');
+
+function renderAttachmentStrip() {
+  if (PENDING_ATTACHMENTS.length === 0) {
+    attachStrip.style.display = 'none';
+    attachStrip.innerHTML = '';
+    return;
+  }
+  attachStrip.style.display = 'flex';
+  attachStrip.style.flexWrap = 'wrap';
+  attachStrip.style.gap = '6px';
+  attachStrip.innerHTML = PENDING_ATTACHMENTS.map((a, i) => {
+    const warn = a.kind === 'image' && !a.vision_supported ? ' <span style="color:#c33">⚠ 当前模型无视觉</span>' : '';
+    const icon = a.kind === 'image' ? '🖼' : a.kind === 'text' ? '📄' : '📎';
+    return `<span style="background:#fff9e8;padding:4px 8px;border:1px solid #ccc">
+      ${icon} ${escapeHTML(a.filename)} (${(a.size/1024).toFixed(1)}KB)${warn}
+      <button data-idx="${i}" class="att-del" style="margin-left:4px;cursor:pointer;background:none;border:none;color:#c33">×</button>
+    </span>`;
+  }).join('');
+  attachStrip.querySelectorAll('.att-del').forEach(b => {
+    b.onclick = () => {
+      PENDING_ATTACHMENTS.splice(parseInt(b.dataset.idx), 1);
+      renderAttachmentStrip();
+    };
+  });
+}
+
+async function uploadFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const r = await fetch('/api/attachments/upload', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({data_url: reader.result, filename: file.name}),
+        });
+        const d = await r.json();
+        if (!d.ok) { alert('上传失败: ' + (d.error || 'unknown')); reject(); return; }
+        resolve(d);
+      } catch (e) { alert('上传失败: ' + e); reject(); }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+attachBtn.onclick = () => fileInput.click();
+fileInput.onchange = async () => {
+  for (const f of Array.from(fileInput.files)) {
+    try {
+      const meta = await uploadFile(f);
+      PENDING_ATTACHMENTS.push(meta);
+    } catch(e) { /* alerted already */ }
+  }
+  renderAttachmentStrip();
+  fileInput.value = '';  // 允许再次选相同文件
+};
+
+// 拖拽支持
+messagesEl.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+messagesEl.addEventListener('drop', async e => {
+  e.preventDefault();
+  for (const f of Array.from(e.dataTransfer.files)) {
+    try {
+      const meta = await uploadFile(f);
+      PENDING_ATTACHMENTS.push(meta);
+    } catch(e) {}
+  }
+  renderAttachmentStrip();
+});
+
+// 粘贴支持（Ctrl+V 剪贴板图片）
+inputEl.addEventListener('paste', async e => {
+  const items = e.clipboardData?.items || [];
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) {
+        try {
+          const meta = await uploadFile(file);
+          PENDING_ATTACHMENTS.push(meta);
+          renderAttachmentStrip();
+        } catch(e) {}
+      }
+    }
+  }
+});
+
+// ─── 停止按钮 ──────────────────────
+document.getElementById('stop-btn').onclick = () => {
+  wsSend({action: 'stop'});
+  document.getElementById('stop-bar').style.display = 'none';
+};
+
+// ─── 今日 LLM 用量徽章 ─────────────
+async function refreshUsage() {
+  try {
+    const r = await fetch('/api/usage/today');
+    if (!r.ok) return;
+    const d = await r.json();
+    const btn = document.getElementById('usage-btn');
+    if (btn) {
+      btn.textContent = `💰 $${d.cost_usd.toFixed(3)} · ${(d.total_tokens/1000).toFixed(1)}k tok`;
+    }
+  } catch(e) { /* ignore */ }
+}
+refreshUsage();
+setInterval(refreshUsage, 30000);
+
+document.getElementById('usage-btn').onclick = async () => {
+  const r = await fetch('/api/usage/today');
+  const d = await r.json();
+  const rows = (d.by_agent || []).map(a =>
+    `<tr><td>${escapeHTML(a.agent)}</td><td style="text-align:right">${a.calls}</td><td style="text-align:right">${(a.tokens/1000).toFixed(1)}k</td><td style="text-align:right">$${a.cost.toFixed(4)}</td></tr>`
+  ).join('');
+  alert(`今日 LLM 用量\n──────────────\n总调用: ${d.calls} 次\n输入 tokens: ${(d.prompt_tokens/1000).toFixed(1)}k\n输出 tokens: ${(d.completion_tokens/1000).toFixed(1)}k\n合计 tokens: ${(d.total_tokens/1000).toFixed(1)}k\n估算费用: $${d.cost_usd.toFixed(4)}\n\n按 agent 拆分:\n${(d.by_agent||[]).map(a=>`  ${a.agent}: ${a.calls} 次 / ${(a.tokens/1000).toFixed(1)}k tok / $${a.cost.toFixed(4)}`).join('\n') || '  (无数据)'}\n\n(数字每 30 秒自动刷新，本地模型按 $0 计)`);
+};
+
 // ─── 同事管理面板 ─────────────────────
 async function openRoster() {
   const modal = document.getElementById('roster-modal');
@@ -1838,17 +2084,20 @@ async function openRoster() {
 
   const listHtml = customs.length === 0
     ? '<div class="ob-desc" style="font-style:italic">还没有自定义同事。点下方"+ 创建新同事"来加。</div>'
-    : customs.map(a => `
+    : customs.map(a => {
+        const safeEmoji = escapeHTML(String(a.emoji || '●'));
+        const safeColor = escapeHTML(String(a.color || '#6b7280'));
+        return `
         <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fff9e8;margin-bottom:6px;border:1px solid #ccc">
-          <div style="width:36px;height:36px;background:${a.color};color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;border:2px solid #333">${a.emoji}</div>
+          <div style="width:36px;height:36px;background:${safeColor};color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;border:2px solid #333">${safeEmoji}</div>
           <div style="flex:1">
-            <div><b>${a.name}</b> <span style="color:#666">· ${a.role}</span></div>
-            <div style="font-size:11px;color:#666;margin-top:2px;line-height:1.4">${(a.system||'').slice(0,120).replace(/</g,'&lt;')}${(a.system||'').length>120?'…':''}</div>
+            <div><b>${escapeHTML(a.name)}</b> <span style="color:#666">· ${escapeHTML(a.role)}</span></div>
+            <div style="font-size:11px;color:#666;margin-top:2px;line-height:1.4">${escapeHTML((a.system||'').slice(0,120))}${(a.system||'').length>120?'…':''}</div>
           </div>
-          <button type="button" data-edit-agent="${a.name}" style="font-size:11px;padding:2px 8px;cursor:pointer">编辑</button>
-          <button type="button" data-del-agent="${a.name}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
+          <button type="button" data-edit-agent="${escapeAttr(a.name)}" style="font-size:11px;padding:2px 8px;cursor:pointer">编辑</button>
+          <button type="button" data-del-agent="${escapeAttr(a.name)}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
         </div>
-      `).join('');
+      `}).join('');
 
   body.innerHTML = `
     <div style="margin-bottom:10px;color:#555;font-size:12px">
@@ -1931,25 +2180,3 @@ async function openRoster() {
     const r = await fetch('/api/agents/custom', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      msg.style.color = '#c33';
-      msg.textContent = '✗ ' + (j.detail || r.statusText);
-      return;
-    }
-    msg.style.color = '#2a7d2a';
-    msg.textContent = `✓ 保存成功：${payload.name}（${payload.role}）${editingName ? ' [已更新]' : ' [新增]'}`;
-    setTimeout(() => openRoster(), 600);  // 刷新面板
-  };
-
-  modal.style.display = 'flex';
-}
-document.getElementById('roster-btn').onclick = openRoster;
-document.getElementById('roster-close').onclick = () => document.getElementById('roster-modal').style.display = 'none';
-document.getElementById('roster-bg').onclick = () => document.getElementById('roster-modal').style.display = 'none';
-
-</script>
-</body>
-</html>

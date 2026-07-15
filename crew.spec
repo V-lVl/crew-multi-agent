@@ -31,6 +31,8 @@ hiddenimports = [
     "websockets.legacy.server",
     # 项目内部模块（保险，防 PyInstaller 静态分析漏抓）
     "agents_cli",
+    "pricing",
+    "attachments",
     "providers",
     "supervisor",
     "server",

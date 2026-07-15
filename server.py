@@ -40,6 +40,7 @@ ASSETS_DIR = Path(_meipass) if _meipass else BASE
 DB_PATH = DATA_DIR / "team.db"
 CONFIG_PATH = DATA_DIR / "config.json"
 DYNAMIC_AGENTS_PATH = DATA_DIR / "dynamic_agents.json"
+ATTACHMENTS_DIR = DATA_DIR / "attachments"
 
 
 def load_config() -> dict:
@@ -95,6 +96,8 @@ _load_env_from_file()
 
 # ─────────────────────────── LLM Provider（多家兼容） ───────────────────────────
 import providers as _providers
+import attachments as _attachments
+_attachments.set_attachments_dir(ATTACHMENTS_DIR)
 
 # 优先从 CONFIG 里读，其次从 .env 兼容旧 ARK_API_KEY，最后为空
 def _get_current_llm() -> tuple[str, str, str, str]:
@@ -179,78 +182,142 @@ def router_system(active: list[str]) -> str:
 
 
 # ─────────────────────────── 模型调用（多 provider 兼容） ───────────────────────────
-async def call_ark(messages: list[dict], max_tokens: int = 400, temperature: float = 0.85) -> str:
+async def call_ark(messages: list[dict], max_tokens: int = 400, temperature: float = 0.85,
+                   agent_name: str = "") -> str:
     """兼容旧名。真正走 call_llm。"""
-    return await call_llm(messages, max_tokens, temperature)
+    return await call_llm(messages, max_tokens, temperature, agent_name=agent_name)
 
 
-async def call_llm(messages: list[dict], max_tokens: int = 400, temperature: float = 0.85) -> str:
+async def call_llm(
+    messages: list[dict],
+    max_tokens: int = 400,
+    temperature: float = 0.85,
+    agent_name: str = "",
+) -> str:
+    """调用当前配置的 LLM。
+
+    自动处理：
+      · 上下文过长时裁剪（保 system + 最近消息）
+      · 429/5xx 指数退避重试 3 次
+      · 记录 usage 到 team.db 的 llm_usage 表
+    """
+    import pricing as _pricing
+
     pid, key, endpoint, model = _get_current_llm()
     p = _providers.get_provider(pid) or {}
     protocol = p.get("protocol", "openai")
     key_optional = p.get("key_optional", False)
 
-    def _sync() -> str:
+    # ─── 上下文裁剪 ───
+    max_ctx = _pricing.get_max_context(pid)
+    messages, trim_meta = _pricing.trim_messages(messages, max_ctx, reserve_for_response=max_tokens + 500)
+    if trim_meta["dropped"] > 0:
+        print(f"[ctx] {agent_name or 'llm'}: 裁剪掉 {trim_meta['dropped']} 条消息 "
+              f"(tokens {trim_meta['tokens_before']} → {trim_meta['tokens_after']})")
+
+    def _sync() -> tuple[str, dict]:
+        """返回 (text, usage_dict)。usage_dict = {prompt, completion, cost, retries, ok}"""
         # key 允许空的 provider（本地部署）不要求 key
         if not key and not key_optional:
-            return "[未配置 API key。点右上『?』或首次向导里填一个。]"
-        try:
-            if protocol == "anthropic":
-                # Anthropic Messages API 结构不同
-                sys_msg = ""
-                msgs = []
-                for m in messages:
-                    if m["role"] == "system":
-                        sys_msg = m["content"]
-                    else:
-                        msgs.append({"role": m["role"], "content": m["content"]})
-                body = json.dumps(
-                    {
-                        "model": model,
-                        "system": sys_msg,
-                        "messages": msgs,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                    },
-                    ensure_ascii=False,
-                ).encode("utf-8")
-                req = urllib.request.Request(
-                    endpoint,
-                    data=body,
-                    headers={
-                        "x-api-key": key,
-                        "anthropic-version": "2023-06-01",
-                        "Content-Type": "application/json",
-                    },
-                )
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    data = json.loads(r.read().decode("utf-8"))
-                    return data["content"][0]["text"].strip()
-            else:
-                # OpenAI 兼容格式（大部分 provider + 本地 Ollama/LM Studio/vLLM）
-                body = json.dumps(
-                    {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
-                    ensure_ascii=False,
-                ).encode("utf-8")
-                headers = {"Content-Type": "application/json"}
-                # 有 key 就带上；本地部署可以没 key
-                if key:
-                    headers["Authorization"] = f"Bearer {key}"
-                req = urllib.request.Request(endpoint, data=body, headers=headers)
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    data = json.loads(r.read().decode("utf-8"))
-                    return data["choices"][0]["message"]["content"].strip()
-        except urllib.error.HTTPError as e:
-            return f"[{pid} {e.code}: {e.read().decode('utf-8', 'ignore')[:180]}]"
-        except urllib.error.URLError as e:
-            # 本地 endpoint 连不上时给个更友好的提示
-            if p.get("local"):
-                return f"[连不上 {pid} ({endpoint})。检查本地服务是否启动：{e.reason}]"
-            return f"[{pid} 连接失败: {e.reason}]"
-        except Exception as e:
-            return f"[{pid} 调用出错: {e}]"
+            return "[未配置 API key。点右上『?』或首次向导里填一个。]", {"ok": False}
 
-    return await asyncio.to_thread(_sync)
+        last_error = ""
+        for attempt in range(3):  # 最多重试 3 次
+            try:
+                if protocol == "anthropic":
+                    sys_msg = ""
+                    msgs = []
+                    for m in messages:
+                        if m["role"] == "system":
+                            sys_msg = m["content"]
+                        else:
+                            msgs.append({"role": m["role"], "content": m["content"]})
+                    body = json.dumps(
+                        {"model": model, "system": sys_msg, "messages": msgs,
+                         "max_tokens": max_tokens, "temperature": temperature},
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    req = urllib.request.Request(endpoint, data=body, headers={
+                        "x-api-key": key, "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    })
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        data = json.loads(r.read().decode("utf-8"))
+                        text = data["content"][0]["text"].strip()
+                        u = data.get("usage", {})
+                        prompt_tok = u.get("input_tokens", 0)
+                        comp_tok = u.get("output_tokens", 0)
+                else:
+                    # OpenAI 兼容
+                    body = json.dumps(
+                        {"model": model, "messages": messages,
+                         "max_tokens": max_tokens, "temperature": temperature},
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    headers = {"Content-Type": "application/json"}
+                    if key:
+                        headers["Authorization"] = f"Bearer {key}"
+                    req = urllib.request.Request(endpoint, data=body, headers=headers)
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        data = json.loads(r.read().decode("utf-8"))
+                        text = data["choices"][0]["message"]["content"].strip()
+                        u = data.get("usage", {})
+                        prompt_tok = u.get("prompt_tokens", 0)
+                        comp_tok = u.get("completion_tokens", 0)
+
+                # 有些 provider 不返回 usage — 用估算
+                if not prompt_tok:
+                    prompt_tok = _pricing.estimate_messages_tokens(messages)
+                if not comp_tok:
+                    comp_tok = _pricing.estimate_tokens(text)
+
+                cost = _pricing.estimate_cost_usd(pid, prompt_tok, comp_tok)
+                return text, {"ok": True, "prompt": prompt_tok, "completion": comp_tok,
+                              "cost": cost, "retries": attempt, "provider": pid, "model": model}
+
+            except urllib.error.HTTPError as e:
+                code = e.code
+                body_text = e.read().decode("utf-8", "ignore")[:200] if hasattr(e, 'read') else ""
+                last_error = f"HTTP {code}: {body_text}"
+                # 429 / 5xx 指数退避重试；4xx（除 429）立即失败
+                if code == 429 or 500 <= code < 600:
+                    if attempt < 2:
+                        import time as _t
+                        _t.sleep(2 ** attempt)  # 1s, 2s, 4s
+                        continue
+                return f"[{pid} {last_error}]", {"ok": False, "retries": attempt, "error": last_error}
+            except urllib.error.URLError as e:
+                last_error = f"{e.reason}"
+                if attempt < 2:
+                    import time as _t
+                    _t.sleep(2 ** attempt)
+                    continue
+                if p.get("local"):
+                    return f"[连不上 {pid} ({endpoint})。检查本地服务是否启动：{e.reason}]", {"ok": False, "error": last_error}
+                return f"[{pid} 连接失败: {e.reason}]", {"ok": False, "error": last_error}
+            except Exception as e:
+                return f"[{pid} 调用出错: {e}]", {"ok": False, "error": str(e)}
+
+        return f"[{pid} 重试 3 次后仍失败: {last_error}]", {"ok": False, "error": last_error}
+
+    text, usage = await asyncio.to_thread(_sync)
+
+    # ─── 写 usage 到 db ───
+    if usage.get("ok"):
+        try:
+            db_log_usage(
+                agent=agent_name or "unknown",
+                provider=usage["provider"],
+                model=usage["model"],
+                prompt_tokens=usage["prompt"],
+                completion_tokens=usage["completion"],
+                cost_usd=usage["cost"],
+                retries=usage["retries"],
+            )
+        except Exception as e:
+            print(f"[usage log 写入失败] {e}")
+
+    return text
 
 
 # ─────────────────────────── 数据库：话题记忆 ───────────────────────────
@@ -276,8 +343,65 @@ def db() -> sqlite3.Connection:
         FOREIGN KEY(topic_id) REFERENCES topics(id) ON DELETE CASCADE
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_topic ON messages(topic_id, id)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS llm_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts REAL NOT NULL,
+        agent TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_tokens INTEGER NOT NULL,
+        completion_tokens INTEGER NOT NULL,
+        cost_usd REAL NOT NULL,
+        retries INTEGER DEFAULT 0
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_ts ON llm_usage(ts)")
     conn.commit()
     return conn
+
+
+def db_log_usage(agent: str, provider: str, model: str,
+                 prompt_tokens: int, completion_tokens: int, cost_usd: float,
+                 retries: int = 0) -> None:
+    with db() as c:
+        c.execute(
+            "INSERT INTO llm_usage(ts,agent,provider,model,prompt_tokens,completion_tokens,cost_usd,retries) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (time.time(), agent, provider, model, prompt_tokens, completion_tokens, cost_usd, retries),
+        )
+
+
+def db_usage_today() -> dict:
+    """返回今天（本地时区 0 点起）的 usage 汇总。"""
+    import datetime as _dt
+    today_start = _dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    with db() as c:
+        row = c.execute(
+            "SELECT COUNT(*) as calls, "
+            "COALESCE(SUM(prompt_tokens),0) as prompt, "
+            "COALESCE(SUM(completion_tokens),0) as completion, "
+            "COALESCE(SUM(cost_usd),0) as cost "
+            "FROM llm_usage WHERE ts >= ?",
+            (today_start,),
+        ).fetchone()
+        by_agent = c.execute(
+            "SELECT agent, COUNT(*) as calls, "
+            "SUM(prompt_tokens+completion_tokens) as tokens, "
+            "SUM(cost_usd) as cost "
+            "FROM llm_usage WHERE ts >= ? GROUP BY agent ORDER BY cost DESC LIMIT 10",
+            (today_start,),
+        ).fetchall()
+        return {
+            "calls": row["calls"] or 0,
+            "prompt_tokens": row["prompt"] or 0,
+            "completion_tokens": row["completion"] or 0,
+            "total_tokens": (row["prompt"] or 0) + (row["completion"] or 0),
+            "cost_usd": round(row["cost"] or 0, 4),
+            "by_agent": [
+                {"agent": r["agent"], "calls": r["calls"],
+                 "tokens": r["tokens"], "cost": round(r["cost"] or 0, 4)}
+                for r in by_agent
+            ],
+        }
 
 
 def db_create_topic(title: str, roster: list[str]) -> int:
@@ -341,6 +465,23 @@ class Room:
         self.roster: list[str] = list(DEFAULT_ROSTER)
         self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
+        # 追踪所有正在跑的 agent/supervisor 任务，用于用户"停止"操作
+        self.pending_tasks: set[asyncio.Task] = set()
+
+    def track_task(self, task: asyncio.Task) -> asyncio.Task:
+        """把一个任务纳入 pending_tasks，完成时自动清理。"""
+        self.pending_tasks.add(task)
+        task.add_done_callback(self.pending_tasks.discard)
+        return task
+
+    def stop_all(self) -> int:
+        """取消所有正在跑的任务，返回被 cancel 的数量。"""
+        n = 0
+        for t in list(self.pending_tasks):
+            if not t.done():
+                t.cancel()
+                n += 1
+        return n
 
     def switch_to(self, topic_id: int | None, history: list[dict], roster: list[str]) -> None:
         self.topic_id = topic_id
@@ -349,9 +490,34 @@ class Room:
 
     def build_context(self, target_agent: str, limit: int = 24) -> list[dict]:
         msgs: list[dict] = [{"role": "system", "content": AGENTS[target_agent]["system"]}]
-        for m in self.history[-limit:]:
+        # 检查当前模型是否支持视觉
+        try:
+            pid, _, _, model = _get_current_llm()
+            protocol = (_providers.get_provider(pid) or {}).get("protocol", "openai")
+            vision_ok = _attachments.is_vision_capable(pid, model)
+        except Exception:
+            protocol, vision_ok = "openai", False
+
+        recent = self.history[-limit:]
+        for i, m in enumerate(recent):
+            atts = m.get("attachments", []) or []
+            has_images = any(a.get("kind") == "image" for a in atts)
+            has_text_files = any(a.get("kind") == "text" for a in atts)
+
             if m["role"] == "user":
-                msgs.append({"role": "user", "content": f"{m['name']}: {m['content']}"})
+                # 只对**最后一条** user 消息带图时启用多模态（否则老图会重复占 token）
+                is_last_user = (i == len(recent) - 1)
+                if is_last_user and (has_images or has_text_files) and (vision_ok or has_text_files):
+                    text = f"{m['name']}: {m['content']}"
+                    content = _attachments.build_multimodal_content(text, atts, protocol)
+                    msgs.append({"role": "user", "content": content})
+                elif is_last_user and has_images and not vision_ok:
+                    # 提示模型看不到图
+                    n = sum(1 for a in atts if a.get("kind") == "image")
+                    msgs.append({"role": "user",
+                                 "content": f"{m['name']}: {m['content']}\n[附件：{n} 张图片，但当前模型不支持视觉，未附上]"})
+                else:
+                    msgs.append({"role": "user", "content": f"{m['name']}: {m['content']}"})
             elif m["role"] == "agent":
                 if m["name"] == target_agent:
                     msgs.append({"role": "assistant", "content": m["content"]})
@@ -369,9 +535,12 @@ class Room:
         for ws in dead:
             self.clients.discard(ws)
 
-    async def push_message(self, role: str, name: str, content: str, kind: str = "msg") -> None:
+    async def push_message(self, role: str, name: str, content: str, kind: str = "msg",
+                           attachments: list[dict] | None = None) -> None:
         ts = time.time()
         item = {"role": role, "name": name, "content": content, "ts": ts, "kind": kind}
+        if attachments:
+            item["attachments"] = attachments
         self.history.append(item)
         if self.topic_id is None:
             # 用户发第一条消息 / 触发 discuss 时懒创建 topic
@@ -427,6 +596,7 @@ async def route_message(text: str) -> str:
     reply = await call_ark(
         [{"role": "system", "content": router_system(active)},
          {"role": "user", "content": text}],
+        agent_name="[router]",
         max_tokens=20, temperature=0.1,
     )
     for name in active:
@@ -439,7 +609,7 @@ async def agent_reply(agent: str) -> None:
     async with room.lock:
         await room.push_typing(agent, True)
         try:
-            reply = await call_ark(room.build_context(agent))
+            reply = await call_ark(room.build_context(agent), agent_name=agent)
         finally:
             await room.push_typing(agent, False)
         await room.push_message("agent", agent, reply)
@@ -458,6 +628,7 @@ async def summarize_topic(topic_id: int | None = None, history: list[dict] | Non
     summary = await call_ark(
         [{"role": "system", "content": "用一句中文总结这次团队讨论，30 字以内，聚焦结论或决定，别加引号别加句号。"},
          {"role": "user", "content": convo}],
+        agent_name="[summary]",
         max_tokens=80, temperature=0.4,
     )
     summary = summary.strip().strip("。「」\"'")[:80]
@@ -517,7 +688,7 @@ async def supervisor_reply(user_text: str) -> None:
                     messages.append({"role": "user", "content": f"[{m['name']}]: {m['content']}"})
         messages.append({"role": "user", "content": user_text})
 
-        raw = await call_ark(messages, max_tokens=600, temperature=0.7)
+        raw = await call_ark(messages, max_tokens=600, temperature=0.7, agent_name=sv.SUPERVISOR_PROFILE["name"])
     finally:
         await room.push_typing(sv.SUPERVISOR_PROFILE["name"], False)
 
@@ -559,7 +730,7 @@ async def supervisor_reply(user_text: str) -> None:
             {"role": "assistant", "content": raw},
             {"role": "user", "content": "刚才这轮讨论，你作为任务调度做一个 2-3 句的收尾和下一步建议。"},
         ]
-        wrapup = await call_ark(summary_msgs, max_tokens=300, temperature=0.6)
+        wrapup = await call_ark(summary_msgs, max_tokens=300, temperature=0.6, agent_name=sv.SUPERVISOR_PROFILE["name"])
         await room.push_message_as(
             role="agent", name=sv.SUPERVISOR_PROFILE["name"],
             content=wrapup,
@@ -624,7 +795,11 @@ async def supervisor_reply(user_text: str) -> None:
         if not task:
             await room.push_message("system", "系统", "⚠️ Foreman 想让 Hermes 做事但没写清楚", kind="notice")
             return
-        need_approve, reason = sv.needs_approval("execute", {"task": task}, CONFIG["permission_level"])
+        # per-agent 权限：Foreman 是执行发起者，从 CONFIG.agent_permissions 里查它的单独档位
+        foreman_name = sv.SUPERVISOR_PROFILE["name"]
+        agent_perms = CONFIG.get("agent_permissions", {})
+        foreman_level = agent_perms.get(foreman_name)  # None 表示用全局
+        need_approve, reason = sv.needs_approval("execute", {"task": task}, CONFIG["permission_level"], agent_level=foreman_level)
         if need_approve:
             pending = sv.approvals.create("execute", {"task": task, "reason": reason})
             await room.broadcast({
@@ -675,7 +850,7 @@ async def supervisor_reply(user_text: str) -> None:
         followup = await call_ark(messages + [
             {"role": "assistant", "content": raw},
             {"role": "user", "content": f"Hermes 已执行完毕，输出末尾是：{tail[:400]}。用 2-3 句话跟老板汇报结果、下一步建议。"},
-        ], max_tokens=250, temperature=0.6)
+        ], max_tokens=250, temperature=0.6, agent_name=sv.SUPERVISOR_PROFILE["name"])
         await room.push_message_as(
             role="agent", name=sv.SUPERVISOR_PROFILE["name"],
             content=followup,
@@ -968,6 +1143,67 @@ async def delete_custom_agent(agent_id: str) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/attachments/upload")
+async def upload_attachment(payload: dict) -> dict:
+    """接收 base64 data URL，落盘 → 返回附件 id + 元数据。
+    body: {data_url: 'data:image/png;base64,...', filename?: str}
+    """
+    data_url = payload.get("data_url", "")
+    filename = payload.get("filename", "")
+    if not data_url:
+        return {"ok": False, "error": "data_url 必填"}
+    try:
+        att = _attachments.save_attachment(data_url, filename=filename)
+        # 检测当前模型是否支持视觉
+        pid, _, _, model = _get_current_llm()
+        vision_ok = _attachments.is_vision_capable(pid, model)
+        return {
+            "ok": True,
+            "id": att["id"],
+            "filename": att["filename"],
+            "mime": att["mime"],
+            "size": att["size"],
+            "kind": att["kind"],
+            "vision_supported": vision_ok or att["kind"] != "image",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/agents/permissions")
+async def get_agent_permissions() -> dict:
+    """返回 {global: str, per_agent: {name: level}}"""
+    return {
+        "global": CONFIG.get("permission_level", "balanced"),
+        "per_agent": CONFIG.get("agent_permissions", {}),
+    }
+
+
+@app.post("/api/agents/permissions")
+async def set_agent_permission(payload: dict) -> dict:
+    """设置某 agent 的独立档位。body: {name, level|null}
+    level=null 表示清除（回退到全局档位）。"""
+    name = str(payload.get("name", "")).strip()
+    level = payload.get("level")
+    if not name:
+        return {"ok": False, "error": "name 必填"}
+    perms = CONFIG.get("agent_permissions", {})
+    if level is None or level == "":
+        perms.pop(name, None)
+    elif level in sv.PERMISSION_LEVELS:
+        perms[name] = level
+    else:
+        return {"ok": False, "error": f"档位必须是 {sv.PERMISSION_LEVELS}"}
+    CONFIG["agent_permissions"] = perms
+    save_config(CONFIG)
+    return {"ok": True, "per_agent": perms}
+
+
+@app.get("/api/usage/today")
+async def get_usage_today() -> dict:
+    return db_usage_today()
+
+
 @app.post("/api/providers/test")
 async def test_provider(payload: dict) -> dict:
     """连通性自测：拿 UI 里填的 provider/endpoint/model/key 组一个最小的对话请求，
@@ -1169,6 +1405,45 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     await room.broadcast({"type": "state", "topic_id": room.topic_id, "roster": room.roster})
                 continue
 
+            if action == "stop":
+                # 中断所有正在跑的 agent / supervisor / discuss 任务
+                n = room.stop_all()
+                # 清除所有 typing 提示
+                async with room.lock:
+                    for agent in list(room.roster):
+                        await room.push_typing(agent, False)
+                await room.push_message("system", "系统", f"⏹ 已停止 {n} 个正在进行的任务", kind="notice")
+                continue
+
+            if action == "regenerate":
+                # 删除最后一条 agent 消息，让 router 重新决定
+                if not room.history:
+                    continue
+                # 找最后一条 agent 消息
+                last_agent_idx = None
+                for i in range(len(room.history) - 1, -1, -1):
+                    if room.history[i].get("role") == "agent":
+                        last_agent_idx = i
+                        break
+                if last_agent_idx is None:
+                    continue
+                removed = room.history[last_agent_idx]
+                # 从 db 删掉
+                if room.topic_id:
+                    try:
+                        with db() as c:
+                            c.execute("DELETE FROM messages WHERE topic_id=? AND role='agent' AND name=? AND ts=?",
+                                     (room.topic_id, removed.get("name"), removed.get("ts")))
+                    except Exception:
+                        pass
+                room.history.pop(last_agent_idx)
+                await room.broadcast({"type": "message_removed", "ts": removed.get("ts")})
+                # 让原 agent 重说一次
+                agent_name = removed.get("name")
+                if agent_name and agent_name in room.roster:
+                    room.track_task(asyncio.create_task(agent_reply(agent_name)))
+                continue
+
             if action == "new_topic":
                 # 结束并总结当前 topic（拍快照传进去，防止被后续切换清空）
                 if room.topic_id and room.history:
@@ -1198,7 +1473,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
             # 默认：send
             text = (data.get("content") or "").strip()
-            if not text:
+            attachments_data = data.get("attachments") or []  # 前端上传后带过来的元数据数组
+            if not text and not attachments_data:
                 continue
             user_name = data.get("user") or "我"
             channel = data.get("channel") or "team"  # "team" | "supervisor"
@@ -1210,32 +1486,59 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 await room.broadcast({"type": "switched", "topic_id": None, "roster": room.roster, "messages": []})
                 continue
 
+            # 附件：从磁盘还原 base64 + preview（前端上传后只带 id 过来）
+            attachments_full = []
+            for meta in attachments_data:
+                aid = meta.get("id")
+                if not aid:
+                    continue
+                # 找文件
+                found = list(ATTACHMENTS_DIR.glob(f"{aid}.*"))
+                if not found:
+                    continue
+                fpath = found[0]
+                raw = fpath.read_bytes()
+                kind = meta.get("kind", "other")
+                att = {
+                    "id": aid,
+                    "filename": meta.get("filename", fpath.name),
+                    "mime": meta.get("mime", "application/octet-stream"),
+                    "size": len(raw),
+                    "kind": kind,
+                }
+                if kind == "image":
+                    import base64 as _b64
+                    att["base64"] = _b64.b64encode(raw).decode("ascii")
+                elif kind == "text":
+                    att["preview"] = raw.decode("utf-8", "ignore")[:5000]
+                attachments_full.append(att)
+
             # 任务调度频道：用户发言直接进 supervisor_reply
             if channel == "supervisor":
-                await room.push_message("user", user_name, text)
-                asyncio.create_task(supervisor_reply(text))
+                await room.push_message("user", user_name, text, attachments=attachments_full)
+                room.track_task(asyncio.create_task(supervisor_reply(text)))
                 continue
 
             if text.startswith("/discuss"):
                 topic = text[len("/discuss"):].strip() or "随便聊聊"
-                asyncio.create_task(run_discuss(topic))
+                room.track_task(asyncio.create_task(run_discuss(topic)))
                 continue
 
-            await room.push_message("user", user_name, text)
+            await room.push_message("user", user_name, text, attachments=attachments_full)
             mention = detect_mention(text)
             if mention and mention in room.roster:
-                asyncio.create_task(agent_reply(mention))
+                room.track_task(asyncio.create_task(agent_reply(mention)))
             elif mention:
                 # @ 了不在场的人：拉他进场
                 if mention not in room.roster:
                     room.roster = room.roster + [mention]
                     await room.broadcast({"type": "state", "topic_id": room.topic_id, "roster": room.roster})
-                asyncio.create_task(agent_reply(mention))
+                room.track_task(asyncio.create_task(agent_reply(mention)))
             else:
                 async def _auto():
                     target = await route_message(text)
                     await agent_reply(target)
-                asyncio.create_task(_auto())
+                room.track_task(asyncio.create_task(_auto()))
     except WebSocketDisconnect:
         pass
     finally:

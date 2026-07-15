@@ -189,7 +189,7 @@ It addresses three concrete engineering gaps:
 
 ### Option 1 — Installer (recommended)
 
-1. Grab the latest **`Crew-Setup-vX.X.X.exe`** (~20 MB) from the [Releases page](https://github.com/IFConstantine/crew-multi-agent/releases/latest)
+1. Grab the latest **`Crew-Setup-vX.X.X.exe`** (~20 MB) from the [Releases page](https://github.com/V-lVl/crew-multi-agent/releases/latest)
 2. Double-click it, walk through the wizard (optional desktop / Start-menu shortcuts)
 3. Launch from the desktop or Start menu
 4. First run pops the onboarding wizard — paste any provider's API key. Crew auto-detects the provider from the prefix.
@@ -210,7 +210,7 @@ For development, debugging, or hacking on internals.
 
 ```bash
 # 1. Clone
-git clone https://github.com/IFConstantine/crew-multi-agent.git
+git clone https://github.com/V-lVl/crew-multi-agent.git
 cd crew-multi-agent
 
 # 2. Virtual env (Python 3.11+, 3.13 recommended)
@@ -515,6 +515,35 @@ DELETE /api/agents/custom/<name>     delete
 
 ---
 
+## 🛡️ Runtime Hardening (v1.7+)
+
+Starting v1.7, Crew moves from "it runs" to "production-ready":
+
+### Context & cost
+
+- **Automatic context trimming**: sliding window with provider-aware `max_context` metadata
+- **Token & cost tracking**: every LLM call logs `prompt_tokens / completion_tokens / cost_usd`, broken down by agent. The 💰 badge in the header refreshes today's spend every 30s
+- **Pricing table**: input/output USD per 1M tokens for all 14 providers built into `pricing.py`. Local models count as $0
+- **Retry with backoff**: 429 / 5xx / network errors → exponential backoff (1s → 2s → 4s, max 3 attempts)
+
+### Interaction control
+
+- **⏹ Stop**: cancel all running agent replies
+- **🔄 Regenerate**: hover any agent message header — the last message can be regenerated
+- **📎 Attachments**: images (multimodal for GPT-4o / Claude 3.5+ / Doubao Vision / Qwen-VL) + text files inlined. Click, drag-drop, or `Ctrl+V` paste
+- **WS auto-reconnect**: exponential backoff (1s → 30s)
+
+### Permissions
+
+- **Per-agent tiers**: global vs agent — **the stricter wins**. Set Owl to `strict` alone and its executions need approval even when global is `autonomous`
+
+### Data
+
+- **Attachments**: `%APPDATA%\Crew\attachments\{sha1}.{ext}`, deduplicated
+- **Usage log**: `llm_usage` table in `team.db`
+
+---
+
 
 ## 🔐 Permission Model
 
@@ -725,4 +754,4 @@ A: Yes. Paste one key in the wizard, ignore the rest. Change / add later from th
 
 ---
 
-<sub>Built by <a href="https://github.com/IFConstantine">IFConstantine</a> · <a href="./README.md">简体中文</a></sub>
+<sub>Built by <a href="https://github.com/V-lVl">V-lVl</a> · <a href="./README.md">简体中文</a></sub>

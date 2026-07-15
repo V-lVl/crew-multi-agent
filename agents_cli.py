@@ -136,6 +136,10 @@ def _build_args_from_template(template: str) -> Callable[[str], list[str]]:
     例：
       "run --input {prompt} --yolo"  → ["run", "--input", "<prompt>", "--yolo"]
       如果模板里没有 {prompt}，就把 prompt 追加到末尾。
+
+    安全性：全程走 subprocess.Popen(args=list, shell=False)，且 {prompt} 内容
+    永远作为独立 argv 元素传入，不经过 shell 解析。因此 prompt 里即使含 `;` `&&`
+    `$()` 等字符也不会被解释，无 shell injection 风险。
     """
     def builder(prompt: str) -> list[str]:
         # 用 shlex 把模板切成 argv-style tokens，然后逐个替换 {prompt}

@@ -220,23 +220,38 @@ class ApprovalRegistry:
 approvals = ApprovalRegistry()
 
 
-def needs_approval(kind: str, payload: dict, permission_level: str) -> tuple[bool, str]:
+def needs_approval(kind: str, payload: dict, permission_level: str,
+                   agent_level: Optional[str] = None) -> tuple[bool, str]:
     """根据当前档位判断是不是要弹审批。
     返回 (要审批吗, 原因) 。
     - hire 永远要审。
-    - execute：strict 永远要审；balanced 只在敏感时审；autonomous 永不拦。"""
+    - execute：strict 永远要审；balanced 只在敏感时审；autonomous 永不拦。
+
+    per-agent 权限：agent_level 若非 None，取全局 vs agent 中**更严格**的那一档。
+    严格程度：strict > balanced > autonomous
+    """
+    # 计算生效档位：取更严格的一档
+    if agent_level and agent_level in PERMISSION_LEVELS:
+        rank = {"strict": 3, "balanced": 2, "autonomous": 1}
+        effective = permission_level if rank.get(permission_level, 2) >= rank.get(agent_level, 2) else agent_level
+    else:
+        effective = permission_level
+
     if kind == "hire":
         return True, "招新人需要老板过一眼"
 
     if kind == "execute":
         task = payload.get("task", "")
-        if permission_level == "strict":
-            return True, "严格档位：所有执行都要过审"
-        if permission_level == "balanced":
+        if effective == "strict":
+            reason = "严格档位：所有执行都要过审"
+            if agent_level and agent_level == "strict" and permission_level != "strict":
+                reason = f"该 agent 单独设为严格档位"
+            return True, reason
+        if effective == "balanced":
             sensitive, keyword = is_sensitive(task)
             if sensitive:
                 return True, f"检测到敏感操作（{keyword}）"
             return False, ""
-        if permission_level == "autonomous":
+        if effective == "autonomous":
             return False, ""
     return False, ""
