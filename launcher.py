@@ -1,0 +1,211 @@
+"""Crew launcher —— PyInstaller 打包后的入口（桌面版）。
+
+关键：打包时 console=False，双击不弹黑窗。
+因此必须防护 stdout/stderr（在 console=False 下 sys.stdout=None，print 会崩）。
+
+职责：
+  1. 找/建用户数据目录 %APPDATA%\\Crew\\
+  2. 把 stdout/stderr 重定向到日志文件（避免 print 崩）
+  3. 设 CREW_DATA_DIR 环境变量给 server 读
+  4. 后台线程跑 uvicorn（server.app）
+  5. 主线程用 pywebview 开一个原生窗口
+  6. 关窗即退出
+
+pywebview 必须在主线程运行（Windows COM 要求）。
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+import threading
+import socket
+from pathlib import Path
+
+
+APP_NAME = "Crew"
+APP_TITLE = "Crew · the workshop"
+PORT = 8765
+URL = f"http://127.0.0.1:{PORT}/"
+
+
+def get_data_dir() -> Path:
+    """用户数据目录：%APPDATA%\\Crew\\（Windows）/ ~/.crew/（其他）"""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        d = Path(base) / APP_NAME
+    else:
+        d = Path.home() / f".{APP_NAME.lower()}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# ─── 关键：console=False 下 stdout/stderr 是 None，任何 print 会崩 ───
+def _redirect_std_streams(data_dir: Path) -> None:
+    """把 stdout/stderr 重定向到日志文件（避免 print/logger 崩溃）"""
+    log_path = data_dir / "launcher.log"
+    try:
+        # 打包（console=False）后 sys.stdout 可能是 None
+        if sys.stdout is None or getattr(sys.stdout, "fileno", None) is None:
+            f = open(log_path, "a", encoding="utf-8", buffering=1)
+            sys.stdout = f
+            sys.stderr = f
+        else:
+            # 源码模式：保留控制台，但也 tee 到日志（可选，先不 tee）
+            pass
+        # Windows 控制台 UTF-8（源码模式有效）
+        if sys.platform == "win32" and sys.stdout is not None:
+            try:
+                sys.stdout.reconfigure(encoding="utf-8")
+                sys.stderr.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
+    except Exception:
+        # 兜底：给 sys.stdout 一个 no-op writer
+        class _NullWriter:
+            def write(self, *a, **kw): pass
+            def flush(self, *a, **kw): pass
+        if sys.stdout is None: sys.stdout = _NullWriter()
+        if sys.stderr is None: sys.stderr = _NullWriter()
+
+
+def _log(msg: str) -> None:
+    """安全 log（不依赖 print，直接写文件；同时尝试 print）"""
+    try:
+        print(f"[{APP_NAME}] {msg}", flush=True)
+    except Exception:
+        pass
+
+
+def wait_for_port(port: int, timeout: float = 30.0) -> bool:
+    """轮询端口，直到 open 或超时。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = socket.socket()
+        try:
+            s.settimeout(0.5)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            return True
+        except OSError:
+            time.sleep(0.3)
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return False
+
+
+def run_uvicorn() -> None:
+    """后台线程里跑 uvicorn。"""
+    try:
+        import uvicorn
+        import server  # noqa: F401
+        uvicorn.run(
+            "server:app",
+            host="127.0.0.1",
+            port=PORT,
+            log_level="warning",
+            access_log=False,
+        )
+    except Exception as e:
+        _log(f"uvicorn 崩溃: {type(e).__name__}: {e}")
+        try:
+            (get_data_dir() / "uvicorn_crash.log").write_text(
+                f"{type(e).__name__}: {e}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+
+def main() -> None:
+    # 1. 准备数据目录 + 重定向流
+    data_dir = get_data_dir()
+    _redirect_std_streams(data_dir)
+    os.environ["CREW_DATA_DIR"] = str(data_dir)
+
+    _log(f"data dir: {data_dir}")
+    _log(f"starting server on {URL}")
+
+    # 2. 起 uvicorn（守护线程）
+    server_thread = threading.Thread(target=run_uvicorn, daemon=True)
+    server_thread.start()
+
+    # 3. 等 server ready
+    if not wait_for_port(PORT, timeout=30):
+        _log("ERROR: server 30 秒内没起来，退出")
+        # 在窗口未起时尝试用 tkinter 弹错误框（避免用户看不到任何东西）
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"Crew 启动失败：server 30 秒未响应。\n请查看 {data_dir}\\launcher.log",
+                "Crew · 启动失败",
+                0x10,  # MB_ICONERROR
+            )
+        except Exception:
+            pass
+        sys.exit(1)
+    time.sleep(0.5)
+    _log("server ready, opening desktop window...")
+
+    # 4. 主线程开原生窗口
+    try:
+        import webview
+        webview.create_window(
+            title=APP_TITLE,
+            url=URL,
+            width=1280,
+            height=820,
+            min_size=(900, 600),
+            resizable=True,
+            confirm_close=False,
+            background_color="#f6efe1",
+        )
+        webview.start(gui=None, debug=False)
+    except Exception as e:
+        _log(f"pywebview 失败: {e}，退回浏览器")
+        try:
+            import webbrowser
+            webbrowser.open(URL)
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"Crew 桌面窗口启动失败：{e}\n已用浏览器打开 {URL}",
+                "Crew · 窗口降级",
+                0x30,  # MB_ICONWARNING
+            )
+            # 让用户浏览器用着，主线程 hang 住让 daemon 存活
+            while True:
+                time.sleep(3600)
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        try:
+            (get_data_dir() / "launcher_crash.log").write_text(
+                f"{type(e).__name__}: {e}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        # 打包版没控制台看不到 traceback，弹个对话框
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"Crew 崩溃：{type(e).__name__}: {e}",
+                "Crew · 崩溃",
+                0x10,
+            )
+        except Exception:
+            pass
+        raise

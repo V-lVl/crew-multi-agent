@@ -1,0 +1,36 @@
+# ── Python ────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── 敏感信息 / 用户数据 ─────────────────────
+.env
+.env.*
+!.env.example
+team.db
+team.db-*
+config.json
+dynamic_agents.json
+*.log
+
+# ── PyInstaller / Inno Setup 产物 ────────────
+build/
+dist/
+*.spec.bak
+
+# ── IDE / OS ──────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ── 临时 ───────────────────────────────────
+*.tmp
+*.bak
+.pytest_cache/
