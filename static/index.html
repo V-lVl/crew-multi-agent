@@ -1467,15 +1467,18 @@ async function openSettings() {
   const modal = document.getElementById('settings-modal');
   const body = document.getElementById('settings-body');
 
-  // 拉当前配置 + provider 列表
-  const [cfgR, provR] = await Promise.all([
+  // 拉当前配置 + provider 列表 + 本地 agent 列表
+  const [cfgR, provR, laR] = await Promise.all([
     fetch('/api/config').then(r => r.json()),
     fetch('/api/providers').then(r => r.json()),
+    fetch('/api/local-agents').then(r => r.json()),
   ]);
   const providers = provR.providers || [];
   const currentPid = cfgR.llm && cfgR.llm.provider;
   const currentModel = cfgR.llm && cfgR.llm.model;
   const keySet = cfgR.llm_key_set;
+  const localAgents = laR.agents || [];
+  const selectedAgent = laR.selected;
 
   const optHtml = providers.map(p =>
     `<option value="${p.id}" data-default="${p.default_model}"${p.id === currentPid ? ' selected' : ''}>${p.name}</option>`
@@ -1504,6 +1507,21 @@ async function openSettings() {
         <div class="ob-desc">${keySet ? '当前已配置。留空 = 不改' : '还没配置，粘一个进去'}</div>
         <input type="password" id="set-api-key" style="width:100%;margin-top:6px" placeholder="${keySet ? '留空 = 不改 key' : '粘贴 key，自动识别 provider'}">
         <div id="set-guess-hint" class="ob-desc" style="margin-top:6px;min-height:1.2em"></div>
+      </div>
+    </div>
+    <div class="ob-item">
+      <span class="ob-check">${localAgents.some(a => a.installed) ? '✓' : '!'}</span>
+      <div style="flex:1">
+        <div class="ob-title">本地执行 Agent · Local Executor</div>
+        <div class="ob-desc">Foreman 决定"要真干"时会调这个本地 CLI 来执行。系统已自动探测你装了哪些。</div>
+        <select id="set-local-agent" style="width:100%;margin-top:6px">
+          ${localAgents.map(a =>
+            `<option value="${a.id}"${a.id === selectedAgent ? ' selected' : ''}${!a.installed ? ' disabled' : ''}>${a.name}${a.installed ? '  ✓ 已安装' : '  · 未安装'}</option>`
+          ).join('')}
+        </select>
+        <div class="ob-desc" style="margin-top:6px">
+          未安装的 Agent 灰掉不可选。安装完重启应用会自动出现在列表里。
+        </div>
       </div>
     </div>
   `;
@@ -1561,11 +1579,21 @@ async function openSettings() {
       model: modelInput.value.trim(),
     };
     if (keyInput.value.trim()) payload.api_key = keyInput.value.trim();
+    // 保存 LLM / provider / key
     await fetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
+    // 保存本地 Agent 选择（如果变了）
+    const agentSel = document.getElementById('set-local-agent');
+    if (agentSel && agentSel.value && agentSel.value !== selectedAgent) {
+      await fetch('/api/local-agents/select', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({agent_id: agentSel.value}),
+      });
+    }
     close();
     // 刷一下 config 显示
     loadConfig();

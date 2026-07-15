@@ -29,9 +29,11 @@ hiddenimports = [
     "uvicorn.lifespan.on",
     "websockets.legacy",
     "websockets.legacy.server",
+    # 项目内部模块（保险，防 PyInstaller 静态分析漏抓）
+    "agents_cli",
+    "providers",
     "supervisor",
     "server",
-    "providers",
     # pywebview 桌面版
     "webview",
     "webview.platforms.winforms",

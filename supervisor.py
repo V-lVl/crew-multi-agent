@@ -90,52 +90,20 @@ SUPERVISOR_PROFILE = {
 }
 
 
-# ── Hermes 执行封装 ─────────────────────────────
-def _find_hermes_exe() -> str:
-    """找到 hermes.exe / hermes 可执行文件（Windows 上是 .exe）。"""
-    for name in ("hermes.exe", "hermes"):
-        p = shutil.which(name)
-        if p:
-            return p
-    # 兜底：hermes venv 里的 Scripts
-    guess = Path.home() / "AppData" / "Local" / "hermes" / "hermes-agent" / "venv" / "Scripts" / "hermes.exe"
-    if guess.exists():
-        return str(guess)
-    return "hermes"
+# ── 本地 Agent CLI 执行封装 ─────────────────────────────
+# 支持 Hermes / Claude Code / Codex / OpenCode / Aider / Gemini CLI，自动探测已安装的
+import agents_cli
 
 
-HERMES_EXE = _find_hermes_exe()
+# 兼容旧代码：保留 run_hermes 名字，但内部用当前选中的 agent
+async def run_hermes(prompt: str, on_line: Optional[Callable[[str], None]] = None, timeout: float = 300, agent_id: Optional[str] = None) -> str:
+    """执行本地 agent CLI（默认用配置里选定的、若未选则用自动探测的默认值）。
 
-
-async def run_hermes(prompt: str, on_line: Optional[Callable[[str], None]] = None, timeout: float = 300) -> str:
-    """异步跑 `hermes -z <prompt> --yolo`，边跑边把 stdout 传给 on_line 回调，
-    最后返回完整 stdout。--yolo 是因为我们已经在自己的审批档位里控过了。"""
-    def _sync() -> str:
-        proc = subprocess.Popen(
-            [HERMES_EXE, "-z", prompt, "--yolo"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            encoding="utf-8", errors="replace",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        buf: list[str] = []
-        try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                buf.append(line)
-                if on_line:
-                    try:
-                        on_line(line.rstrip("\n"))
-                    except Exception:
-                        pass
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            buf.append("\n[执行超时被终止]")
-        except Exception as e:
-            buf.append(f"\n[执行出错: {e}]")
-        return "".join(buf)
-
-    return await asyncio.to_thread(_sync)
+    保留 run_hermes 名字是为了兼容旧调用点；内部会转发到 agents_cli.run_agent。
+    """
+    if agent_id is None:
+        agent_id = agents_cli.get_default() or "hermes"
+    return await agents_cli.run_agent(agent_id, prompt, on_line=on_line, timeout=timeout)
 
 
 # ── 解析总管输出 ─────────────────────────────────

@@ -638,10 +638,13 @@ async def supervisor_reply(user_text: str) -> None:
         else:
             level_txt = {"strict":"严格", "balanced":"平衡", "autonomous":"自主"}.get(CONFIG["permission_level"], CONFIG["permission_level"])
             await room.push_message("system", "系统",
-                f"▶ {level_txt}档位下这条不算敏感 · Foreman 直接推给 Hermes 执行", kind="notice")
+                f"▶ {level_txt}档位下这条不算敏感 · Foreman 直接推给本地 Agent 执行", kind="notice")
 
-        # 真的推给 Hermes
-        await room.push_message("system", "系统", f"▶ Hermes 执行中：{task}", kind="notice")
+        # 真的推给本地 agent
+        selected_agent_id = CONFIG.get("local_agent") or sv.agents_cli.get_default() or "hermes"
+        spec = sv.agents_cli.get_spec(selected_agent_id)
+        agent_display = spec.name if spec else selected_agent_id
+        await room.push_message("system", "系统", f"▶ {agent_display} 执行中：{task}", kind="notice")
         # 用 room.broadcast 流式喂回执行日志（简化：只把最终 stdout 一次性推）
         loop = asyncio.get_event_loop()
 
@@ -650,10 +653,10 @@ async def supervisor_reply(user_text: str) -> None:
                 return
             # 简化：把每行当作系统备注推
             asyncio.run_coroutine_threadsafe(
-                room.push_message("system", "Hermes", line[:500], kind="tool"),
+                room.push_message("system", agent_display, line[:500], kind="tool"),
                 loop,
             )
-        result = await sv.run_hermes(task, on_line=_on_line, timeout=300)
+        result = await sv.run_hermes(task, on_line=_on_line, timeout=300, agent_id=selected_agent_id)
         # 收尾
         tail = result.strip().splitlines()[-1] if result.strip() else "(无输出)"
         await room.push_message("system", "系统", f"✅ 执行完成，最后一行：{tail[:200]}", kind="notice")
@@ -723,13 +726,19 @@ async def delete_topic(topic_id: int) -> dict:
 
 @app.get("/api/config")
 async def get_config() -> dict:
-    """给前端读：当前权限档位、是否已完成首次安装引导、Hermes 是否就绪、LLM 配置。"""
-    hermes_ready = sv.HERMES_EXE and Path(sv.HERMES_EXE).exists() if sv.HERMES_EXE and "/" in sv.HERMES_EXE else bool(sv.HERMES_EXE)
+    """给前端读：当前权限档位、是否已完成首次安装引导、本地 agent 探测、LLM 配置。"""
+    # 探测本地 Agent CLI
+    local_agents = sv.agents_cli.detect_installed()
+    selected_agent = CONFIG.get("local_agent") or sv.agents_cli.get_default()
+    hermes_ready = any(a["installed"] for a in local_agents)  # 只要有任一本地 agent 装了就 ready
     pid, key, endpoint, model = _get_current_llm()
     return {
         "permission_level": CONFIG.get("permission_level", "balanced"),
         "onboarded": CONFIG.get("onboarded", False),
-        "hermes_ready": hermes_ready,
+        "hermes_ready": hermes_ready,  # 兼容旧字段名
+        "local_agent_ready": hermes_ready,
+        "local_agents": local_agents,
+        "selected_local_agent": selected_agent,
         "ark_key_set": bool(key),  # 兼容旧字段名
         "llm_key_set": bool(key),
         "llm": {
@@ -745,6 +754,31 @@ async def get_config() -> dict:
             "color": sv.SUPERVISOR_PROFILE["color"],
         },
     }
+
+
+@app.get("/api/local-agents")
+async def get_local_agents() -> dict:
+    """探测本地已装的 Agent CLI（Hermes / Claude Code / Codex / OpenCode / Aider / Gemini）。"""
+    agents = sv.agents_cli.detect_installed()
+    selected = CONFIG.get("local_agent") or sv.agents_cli.get_default()
+    return {"agents": agents, "selected": selected}
+
+
+@app.post("/api/local-agents/select")
+async def select_local_agent(payload: dict) -> dict:
+    """让用户手动切换默认本地 Agent。"""
+    agent_id = payload.get("agent_id", "").strip()
+    valid_ids = {a.id for a in sv.agents_cli.AGENT_SPECS}
+    if agent_id not in valid_ids:
+        raise HTTPException(400, f"unknown agent_id: {agent_id}")
+    # 确保它装了才允许切
+    spec_installed = {a["id"]: a["installed"] for a in sv.agents_cli.detect_installed()}
+    if not spec_installed.get(agent_id):
+        raise HTTPException(400, f"{agent_id} 尚未安装到本机")
+    CONFIG["local_agent"] = agent_id
+    save_config(CONFIG)
+    await room.broadcast({"type": "config_updated", "config": CONFIG})
+    return {"ok": True, "selected": agent_id}
 
 
 @app.get("/api/providers")
