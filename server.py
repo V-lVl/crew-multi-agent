@@ -975,7 +975,7 @@ async def supervisor_reply(user_text: str) -> None:
                     "❌ 执行被驳回", kind="notice")
                 return
         else:
-            level_txt = {"strict":"严格", "balanced":"平衡", "autonomous":"自主"}.get(CONFIG["permission_level"], CONFIG["permission_level"])
+            level_txt = {"strict":"逐条审批", "balanced":"敏感审批", "autonomous":"自主执行"}.get(CONFIG["permission_level"], CONFIG["permission_level"])
             await room.push_message("system", "系统",
                 f"▶ {level_txt}档位下这条不算敏感 · Foreman 直接推给本地 Agent 执行", kind="notice")
 

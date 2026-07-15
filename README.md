@@ -102,7 +102,7 @@
 
 - Foreman `execute` 时通过 `asyncio.create_subprocess_exec` 起子进程调用当前选中 CLI
 - stdout / stderr 按行流回前端，实时渲染到消息流
-- 三档权限：**Strict**（每步审批）· **Balanced**（默认，敏感操作审批）· **Auto**（Foreman 全权）
+- 三档审批：**逐条审批**（每步确认）· **敏感审批**（默认，敏感操作确认）· **自主执行**（Foreman 全权）
 - 完整审批链：Foreman 意图 → 前端弹卡片 → 用户点批准/驳回 → 记录到 `team.db`
 
 ### 本地优先 + 数据主权
@@ -270,10 +270,10 @@ flowchart TB
     H --> N["写入 dynamic_agents.json"]
     N --> F
 
-    E --> A{"权限档位"}
-    A -->|Strict| P["每步弹审批卡片"]
-    A -->|Balanced| P2["关键步弹审批"]
-    A -->|Auto| X["直接跑"]
+    E --> A{"审批档位"}
+    A -->|逐条审批| P["每步弹审批卡片"]
+    A -->|敏感审批| P2["关键步弹审批"]
+    A -->|自主执行| X["直接跑"]
     P --> R["hermes / claude / codex / …"]
     P2 --> R
     X --> R
@@ -618,11 +618,11 @@ Ash: 当前北京时间是 14:42:55。
 
 | 档位 | Foreman 行为 | 适合场景 |
 |---|---|---|
-| **Strict** | 每一次 `discuss` / `hire` / `execute` 都弹审批卡片 | 首次使用、涉及生产数据、不熟悉本地 Agent 行为 |
-| **Balanced**（默认） | `discuss` 自动通过；`hire` / `execute` 弹审批 | 日常使用 |
-| **Auto** | 全部自动通过，Foreman 全权处理 | 长时间批处理、离席运行 |
+| **逐条审批** | 每一次 `discuss` / `hire` / `execute` 都弹审批卡片 | 首次使用、涉及生产数据、不熟悉本地 Agent 行为 |
+| **敏感审批**（默认） | `discuss` 自动通过；`hire` / `execute` 弹审批 | 日常使用 |
+| **自主执行** | 全部自动通过，Foreman 全权处理 | 长时间批处理、离席运行 |
 
-档位存储在 `%APPDATA%\Crew\config.json` 的 `permission_level` 字段，主界面顶部下拉框实时切换。
+档位存储在 `%APPDATA%\Crew\config.json` 的 `permission_level` 字段（值仍为 `strict` / `balanced` / `autonomous`），主界面顶部下拉框实时切换。
 
 ---
 
