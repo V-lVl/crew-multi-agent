@@ -2,7 +2,7 @@
 ; 编译：ISCC.exe crew.iss  →  产出 dist\Crew-Setup-v1.1.exe
 
 #define AppName        "Crew"
-#define AppVersion     "1.5.0"
+#define AppVersion     "1.6.0"
 #define AppPublisher   "Crew"
 #define AppExeName     "crew.exe"
 #define SourceDir      "dist\Crew"
@@ -13,7 +13,7 @@ AppId={{7C8B4E1A-9D3F-4A5C-B2E8-CREW-1100-2026}}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-AppComments=多 Agent 团队群聊 · 11 位英文名同事 + Foreman 总管 + Hermes 执行
+AppComments=多 Agent 团队群聊 · 11 位英文名同事 + Foreman 任务调度 + Hermes 执行
 AppSupportURL=https://github.com/
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}

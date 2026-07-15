@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-import supervisor as sv  # 总管、招人、Hermes 执行、审批
+import supervisor as sv  # 任务调度、招人、Hermes 执行、审批
 
 ARK_API = "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
 MODEL = "ark-code-latest"
@@ -58,7 +58,7 @@ def save_config(cfg: dict) -> None:
 
 
 def load_dynamic_agents() -> dict:
-    """总管招进来的人存这里，程序重启不丢。"""
+    """任务调度招进来的人存这里，程序重启不丢。"""
     if DYNAMIC_AGENTS_PATH.exists():
         try:
             return json.loads(DYNAMIC_AGENTS_PATH.read_text(encoding="utf-8"))
@@ -162,7 +162,7 @@ AGENTS: dict[str, dict[str, str]] = {
 AGENT_NAMES = list(AGENTS.keys())
 DEFAULT_ROSTER = [n for n, a in AGENTS.items() if a["default_on"]]
 
-# 合并"总管招进来的人"（持久化在 dynamic_agents.json）
+# 合并"任务调度招进来的人"（持久化在 dynamic_agents.json）
 _dyn = load_dynamic_agents()
 for _name, _prof in _dyn.items():
     if _name not in AGENTS:
@@ -387,7 +387,7 @@ class Room:
     async def push_message_as(self, role: str, name: str, content: str,
                               emoji: str = "", color: str = "", title: str = "",
                               kind: str = "msg") -> None:
-        """像 push_message，但用外部指定的 emoji/color/title（用于总管等不在 AGENTS 字典里的角色）。"""
+        """像 push_message，但用外部指定的 emoji/color/title（用于任务调度等不在 AGENTS 字典里的角色）。"""
         ts = time.time()
         item = {"role": role, "name": name, "content": content, "ts": ts, "kind": kind}
         self.history.append(item)
@@ -478,10 +478,10 @@ async def run_discuss(topic: str) -> None:
     await summarize_topic()
 
 
-# ─────────────────────────── 总管流程 ───────────────────────────
+# ─────────────────────────── 任务调度流程 ───────────────────────────
 
 def _push_supervisor_msg(content: str, kind: str = "msg") -> asyncio.Task:
-    """把 Foreman（总管）的话推到当前话题。"""
+    """把 Foreman（任务调度）的话推到当前话题。"""
     return asyncio.create_task(room.push_message_as(
         role="agent", name=sv.SUPERVISOR_PROFILE["name"],
         content=content, kind=kind,
@@ -492,14 +492,14 @@ def _push_supervisor_msg(content: str, kind: str = "msg") -> asyncio.Task:
 
 
 async def supervisor_reply(user_text: str) -> None:
-    """总管主流程：接一句话 → 让模型输出结构化决策 → 分派。"""
+    """任务调度主流程：接一句话 → 让模型输出结构化决策 → 分派。"""
     await room.push_typing(sv.SUPERVISOR_PROFILE["name"], True)
     try:
         # 组一个上下文：sup 的 system + 团队当前有谁 + 最近对话
         team_info = "当前团队在场：" + "、".join(
             f"{n}（{AGENTS[n]['role']}）" for n in room.roster
         )
-        # 也把不在场但能拉进来的人告诉总管
+        # 也把不在场但能拉进来的人告诉任务调度
         other = [f"{n}（{AGENTS[n]['role']}）" for n in AGENTS if n not in room.roster]
         if other:
             team_info += "\n可以叫进来的：" + "、".join(other)
@@ -523,7 +523,7 @@ async def supervisor_reply(user_text: str) -> None:
 
     decision = sv.parse_supervisor_reply(raw)
 
-    # 先把总管想说的话发出来
+    # 先把任务调度想说的话发出来
     await room.push_message_as(
         role="agent", name=sv.SUPERVISOR_PROFILE["name"],
         content=decision["say"] or raw,
@@ -554,10 +554,10 @@ async def supervisor_reply(user_text: str) -> None:
             await agent_reply(p)
             await asyncio.sleep(0.15)
         await room.push_message("system", "系统", "✅ 讨论结束，Foreman 会做总结", kind="notice")
-        # 让总管收尾
+        # 让任务调度收尾
         summary_msgs = messages + [
             {"role": "assistant", "content": raw},
-            {"role": "user", "content": "刚才这轮讨论，你作为总管做一个 2-3 句的收尾和下一步建议。"},
+            {"role": "user", "content": "刚才这轮讨论，你作为任务调度做一个 2-3 句的收尾和下一步建议。"},
         ]
         wrapup = await call_ark(summary_msgs, max_tokens=300, temperature=0.6)
         await room.push_message_as(
@@ -771,6 +771,117 @@ async def get_config() -> dict:
     }
 
 
+@app.get("/api/agents/custom")
+async def list_custom_agents_roster() -> dict:
+    """列出用户自定义/动态招募的所有同事（区分内置 vs 用户创建）。"""
+    dyn = load_dynamic_agents()
+    # 内置 AGENTS 里首次加载时定义的（server 启动时已合并 dyn 进 AGENTS 了，
+    # 所以要用 dyn 单独区分）
+    return {
+        "custom": [{"name": n, **prof} for n, prof in dyn.items()],
+        "builtin": [n for n in AGENTS if n not in dyn],
+    }
+
+
+@app.post("/api/agents/custom")
+async def upsert_custom_agent_roster(payload: dict) -> dict:
+    """新增或更新一个自定义同事。
+
+    body: {name, role, emoji?, color?, system, default_on?}
+    """
+    name = str(payload.get("name", "")).strip()
+    role = str(payload.get("role", "")).strip()
+    system = str(payload.get("system", "")).strip()
+    if not name or not role or not system:
+        raise HTTPException(400, "name / role / system 都是必填")
+    if len(name) > 30:
+        raise HTTPException(400, "name 太长（限 30 字符）")
+    # 简单校验：name 不能含空白/引号
+    if any(c in name for c in ' \t\n"\'`'):
+        raise HTTPException(400, "name 不能含空白或引号")
+
+    emoji = str(payload.get("emoji", "")).strip() or "●"
+    color = str(payload.get("color", "")).strip() or "#6b7280"
+    default_on = bool(payload.get("default_on", False))
+    profile = {"role": role, "emoji": emoji, "color": color,
+               "default_on": default_on, "system": system}
+
+    # 内置角色不允许被覆盖
+    dyn = load_dynamic_agents()
+    if name in AGENTS and name not in dyn:
+        raise HTTPException(400, f"'{name}' 与内置角色冲突，请换一个名字")
+
+    dyn[name] = profile
+    save_dynamic_agents(dyn)
+    # 同步到 in-memory AGENTS，让 router / hire 立即可见
+    AGENTS[name] = profile
+    if name not in AGENT_NAMES:
+        AGENT_NAMES.append(name)
+    await room.broadcast({"type": "roster_updated"})
+    return {"ok": True, "agent": {"name": name, **profile}}
+
+
+@app.delete("/api/agents/custom/{name}")
+async def delete_custom_agent_roster(name: str) -> dict:
+    """删除一个用户自定义同事。内置角色不能删。"""
+    dyn = load_dynamic_agents()
+    if name not in dyn:
+        raise HTTPException(404, f"'{name}' 不是用户自定义角色（或不存在）")
+    del dyn[name]
+    save_dynamic_agents(dyn)
+    # 从 in-memory 表里移除
+    AGENTS.pop(name, None)
+    if name in AGENT_NAMES:
+        AGENT_NAMES.remove(name)
+    # 从当前话题的 roster 里也拿掉
+    if name in room.roster:
+        room.roster.remove(name)
+    await room.broadcast({"type": "roster_updated"})
+    return {"ok": True}
+
+
+@app.post("/api/local-agents/test")
+async def test_local_agent(payload: dict) -> dict:
+    """试跑一个本地 agent CLI：拿一个小 prompt 跑一下，返回 stdout。
+
+    body: {agent_id, prompt?, timeout?}
+      agent_id  必填
+      prompt    默认: "Say hello in one line."
+      timeout   默认 30 秒
+    """
+    agent_id = str(payload.get("agent_id", "")).strip()
+    if not agent_id:
+        raise HTTPException(400, "agent_id 必填")
+    prompt = str(payload.get("prompt", "")).strip() or "Say hello in one line."
+    timeout = float(payload.get("timeout", 30))
+
+    custom_agents = CONFIG.get("custom_agents", [])
+    spec = sv.agents_cli.get_spec(agent_id, custom_agents)
+    if spec is None:
+        raise HTTPException(404, f"unknown agent_id: {agent_id}")
+    exe = sv.agents_cli._resolve(spec)
+    if not exe:
+        return {"ok": False, "reason": f"命令未找到: {spec.command}"}
+
+    import time as _t
+    t0 = _t.time()
+    output = await sv.agents_cli.run_agent(
+        agent_id, prompt, timeout=timeout, custom_agents=custom_agents,
+    )
+    elapsed = round((_t.time() - t0) * 1000)
+    stripped = output.strip()
+    return {
+        "ok": True,
+        "agent_id": agent_id,
+        "name": spec.name,
+        "path": exe,
+        "elapsed_ms": elapsed,
+        "prompt": prompt,
+        "output": stripped[:2000],
+        "output_truncated": len(stripped) > 2000,
+    }
+
+
 @app.get("/api/local-agents")
 async def get_local_agents() -> dict:
     """探测本地已装的 Agent CLI + 用户自定义 agent。"""
@@ -855,6 +966,83 @@ async def delete_custom_agent(agent_id: str) -> dict:
     save_config(CONFIG)
     await room.broadcast({"type": "config_updated", "config": CONFIG})
     return {"ok": True}
+
+
+@app.post("/api/providers/test")
+async def test_provider(payload: dict) -> dict:
+    """连通性自测：拿 UI 里填的 provider/endpoint/model/key 组一个最小的对话请求，
+    快速验证能不能连通、能不能拿到模型响应。
+
+    body: {provider, endpoint?, model?, api_key?}
+    endpoint/model/api_key 都可选——不填就用 provider 默认 + 当前保存的 key。
+    """
+    import time as _t
+    pid = str(payload.get("provider", "")).strip()
+    p = _providers.get_provider(pid)
+    if not p:
+        raise HTTPException(400, f"unknown provider: {pid}")
+
+    # 组装临时 endpoint/model/key（不写盘、不改 CONFIG）
+    endpoint = str(payload.get("endpoint", "")).strip() or p["endpoint"]
+    model = str(payload.get("model", "")).strip() or p["default_model"]
+    # 优先 payload 里的 key；否则用当前保存的
+    key = str(payload.get("api_key", "")).strip()
+    if not key:
+        key = os.environ.get("LLM_API_KEY") or os.environ.get("ARK_API_KEY") or ""
+    key_optional = p.get("key_optional", False)
+    if not key and not key_optional:
+        return {"ok": False, "reason": "缺少 API key（该 provider 需要 key）"}
+
+    # 用一个最小的 ping prompt
+    messages = [{"role": "user", "content": "ping"}]
+    protocol = p.get("protocol", "openai")
+    t0 = _t.time()
+
+    def _sync() -> dict:
+        try:
+            if protocol == "anthropic":
+                body = json.dumps({
+                    "model": model,
+                    "system": "Reply with a single word: pong",
+                    "messages": messages,
+                    "max_tokens": 10,
+                }, ensure_ascii=False).encode("utf-8")
+                req = urllib.request.Request(
+                    endpoint, data=body,
+                    headers={
+                        "x-api-key": key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    },
+                )
+            else:
+                body = json.dumps({
+                    "model": model, "messages": messages, "max_tokens": 10, "temperature": 0.1,
+                }, ensure_ascii=False).encode("utf-8")
+                headers = {"Content-Type": "application/json"}
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
+                req = urllib.request.Request(endpoint, data=body, headers=headers)
+
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                elapsed = round((_t.time() - t0) * 1000)
+                if protocol == "anthropic":
+                    reply = data.get("content", [{}])[0].get("text", "")
+                else:
+                    reply = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return {"ok": True, "latency_ms": elapsed,
+                        "model_reply": (reply or "").strip()[:200],
+                        "provider": pid, "endpoint": endpoint, "model": model}
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "ignore")[:400]
+            return {"ok": False, "reason": f"HTTP {e.code}: {body}"}
+        except urllib.error.URLError as e:
+            return {"ok": False, "reason": f"连接失败: {e.reason}"}
+        except Exception as e:
+            return {"ok": False, "reason": f"错误: {e}"}
+
+    return await asyncio.to_thread(_sync)
 
 
 @app.get("/api/providers")
@@ -1022,7 +1210,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 await room.broadcast({"type": "switched", "topic_id": None, "roster": room.roster, "messages": []})
                 continue
 
-            # 总管频道：用户发言直接进 supervisor_reply
+            # 任务调度频道：用户发言直接进 supervisor_reply
             if channel == "supervisor":
                 await room.push_message("user", user_name, text)
                 asyncio.create_task(supervisor_reply(text))

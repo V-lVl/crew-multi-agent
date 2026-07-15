@@ -1,4 +1,4 @@
-"""总管频道 — 由一个"射马俑"agent 统筹小团队干活。
+"""任务调度频道 — 由一个"射马俑"agent 统筹小团队干活。
 
 它能做 3 件事，靠模型自己在回复里输出结构化决策：
   · discuss  → 拉一小队 agent 开小会讨论
@@ -63,13 +63,13 @@ def is_sensitive(command_or_prompt: str) -> tuple[bool, str]:
     return False, ""
 
 
-# ── 总管人设 ─────────────────────────────────────
+# ── 任务调度人设 ─────────────────────────────────────
 SUPERVISOR_PROFILE = {
     "name": "Foreman",
-    "role": "总管",
+    "role": "任务调度",
     "emoji": "☗",
     "color": "#3f2e1a",
-    "system": """你叫 Foreman，是这个团队的总管（Chief of Staff）。
+    "system": """你叫 Foreman，是这个团队的任务调度（Chief of Staff）。
 
 【你的三个能力】用户跟你说完想法后，你需要判断下一步该怎么办，从这三种里选一个：
   1. discuss   —— 拉团队里几个同事一起开小会讨论方案（还没确定的方向、需要多角度）
@@ -115,12 +115,12 @@ async def run_hermes(
     )
 
 
-# ── 解析总管输出 ─────────────────────────────────
+# ── 解析任务调度输出 ─────────────────────────────────
 _FIELD_RE = re.compile(r"<([^/>][^>]*)>(.*?)</\1>", re.DOTALL)
 
 
 def parse_supervisor_reply(text: str) -> dict:
-    """从总管的模型输出里抠出结构化字段。抠不到就当 chat 处理。"""
+    """从任务调度的模型输出里抠出结构化字段。抠不到就当 chat 处理。"""
     out: dict[str, str] = {}
     for m in _FIELD_RE.finditer(text):
         out[m.group(1).strip()] = m.group(2).strip()
@@ -153,7 +153,7 @@ _HIRE_COLORS = ["#8b5cf6", "#0891b2", "#d97706", "#059669", "#dc2626", "#7c3aed"
 
 
 def new_agent_profile(role: str, persona: str, name_hint: str = "") -> dict:
-    """把总管写的角色+人设变成完整 agent profile 定义。"""
+    """把任务调度写的角色+人设变成完整 agent profile 定义。"""
     # 名字：如果人设里有"叫XX"就用它，否则生成一个
     m = re.search(r"叫(.{1,4})[,，。\s]", persona)
     if m:
@@ -170,7 +170,7 @@ def new_agent_profile(role: str, persona: str, name_hint: str = "") -> dict:
         "color": _HIRE_COLORS[hash(role) % len(_HIRE_COLORS)],
         "default_on": False,
         "system": persona + "\n\n回复 2-4 句话，像同事在群里聊天。别用大标题、别报名字。",
-        "dynamic": True,  # 标记：是总管招进来的
+        "dynamic": True,  # 标记：是任务调度招进来的
     }
 
 

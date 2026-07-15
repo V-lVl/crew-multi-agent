@@ -1,15 +1,12 @@
-# Crew · Desktop-native Multi-Agent Workspace
+# Crew · Desktop Multi-Agent Runtime
 
 [简体中文](./README.md) · **English**
 
-> A desktop-native multi-agent workspace you launch with a double-click.
-> One **Foreman** + one **Chief** + eleven functional teammates
-> run the full loop of *discuss → hire → dispatch → execute → review*
-> inside a single native window.
-> Powered by a local FastAPI + WebSocket backend, rendered in
-> Microsoft Edge WebView2, and able to delegate real execution to any
-> locally-installed **Hermes / Claude Code / OpenAI Codex / OpenCode /
-> Aider / Gemini CLI**.
+> **An open-source desktop runtime that unifies multi-agent orchestration, multi-LLM abstraction, and multi-CLI execution.**
+> pywebview + WebView2 native window in front, FastAPI + WebSocket duplex channel behind,
+> 12 built-in domain agents (unlimited user-extensible), 14 LLM providers (10 cloud + 4 local/self-hosted),
+> and an executor layer that transparently bridges **Hermes / Claude Code / OpenAI Codex / OpenCode / Aider / Gemini CLI**
+> plus any user-defined CLI.
 
 <p align="left">
   <img src="https://img.shields.io/badge/platform-Windows%2010%2B-0078D6?logo=windows&logoColor=white" alt="Windows">
@@ -17,8 +14,9 @@
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/pywebview-6.2-4B8BBE" alt="pywebview">
   <img src="https://img.shields.io/badge/WebView2-Edge-0078D4?logo=microsoftedge&logoColor=white" alt="WebView2">
+  <img src="https://img.shields.io/badge/protocols-OpenAI%20%7C%20Anthropic%20%7C%20Ollama%20%7C%20vLLM-blueviolet" alt="protocols">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
-  <a href="https://github.com/IFConstantine/crew-multi-agent/releases/latest"><img src="https://img.shields.io/github/v/release/IFConstantine/crew-multi-agent" alt="Release"></a>
+  <a href="https://github.com/V-lVl/crew-multi-agent/releases/latest"><img src="https://img.shields.io/github/v/release/V-lVl/crew-multi-agent" alt="Release"></a>
 </p>
 
 ---
@@ -34,6 +32,7 @@
 - [Workflow: How Foreman Dispatches](#-workflow-how-foreman-dispatches)
 - [Supported LLM Providers](#-supported-llm-providers)
 - [Supported Local Agent CLIs](#-supported-local-agent-clis)
+- [User Extension Points (v1.5+)](#-user-extension-points-v15)
 - [Permission Model](#-permission-model)
 - [Repository Layout](#-repository-layout)
 - [Where Data Lives](#-where-data-lives)
@@ -47,63 +46,71 @@
 
 ## 🎯 Positioning
 
-**Crew is not a "multi-role chatbot toy". It's a desktop workspace that turns LLMs into a real productivity surface.**
+**Crew is positioned as an "agent-native desktop workstation"** — not a chatbot, but a programmable, extensible, distributable multi-agent runtime.
 
-It addresses three concrete pain points:
+It addresses three concrete engineering gaps:
 
-1. **A single agent is not enough.** Real work spans product, engineering, design, QA, legal, finance — a generic "assistant" can't cover that.
-2. **Existing multi-agent frameworks stay in the CLI.** LangGraph, CrewAI, AutoGen — great libraries, but they gate the experience behind engineering skill. End users can't touch them directly.
-3. **Web UIs are a compromise.** Browser tabs, address bars, bookmarks are all noise. A serious workspace deserves its own window, icon, and taskbar presence.
+1. **A single agent cannot cover cross-domain collaboration.** Real work spans product, engineering, QA, legal, finance; one prompt cannot carry all that context. Crew orchestrates **multiple agents each with a domain system prompt**, giving each role identity, function, and voice.
+2. **Existing multi-agent frameworks have high engineering friction.** LangGraph / CrewAI / AutoGen are SDK libraries — the deliverable is "write your own runner". Crew ships a **compiled desktop binary** + first-run wizard + graphical config to cover zero-code users.
+3. **Execution and reasoning stay tightly coupled.** Users want different agents to invoke different local tools (Claude Code for coding, Codex for tests, custom CLI for internal data). Crew abstracts executors as `AgentSpec` in `agents_cli.py`: runtime detection + manual switching + user-defined CLIs are all first-class.
 
-Crew's positioning:
+### Three angles on Crew
 
-- **Product angle:** a Windows desktop app you can ship to non-engineers — double-click and go.
-- **Engineering angle:** an open-source scaffold where you can customize agents, swap LLM providers, and bridge to any local CLI.
-- **Interaction angle:** the mental model is *"handing tasks to a team"*, not *"chatting with a bot"*.
+| Angle | Description |
+|---|---|
+| **Product** | Windows `.exe` double-click; 20 MB installer; no terminal window; own icon, taskbar entry, Start menu, uninstall applet |
+| **Engineering** | Python 3.11+ + FastAPI + WebSocket + SQLite + pywebview + WebView2; vanilla HTML/JS front-end; full-stack hackable |
+| **Runtime** | Multi-LLM abstraction (OpenAI-compat / Anthropic Messages / local OpenAI-compat) + multi-CLI executor abstraction (subprocess + args template) + 3-tier approval + persistent sessions |
 
 ---
 
 ## ✨ Features
 
-### Native desktop experience
+### Native desktop integration
 
-- **One double-click, straight into the app window.** No black CMD console, no browser chrome.
-- Built on [pywebview](https://pywebview.flowrl.com/) + the Windows-built-in **Edge WebView2**. Installer is only ~20 MB.
-- Close the window = exit the process. No background residue.
-- Proper application icon, taskbar entry, Start-menu shortcut, and Control Panel uninstall entry — behaves like a real desktop app.
+- **No terminal window:** `crew.exe` has PE Subsystem = 2 (Windows GUI); launch enters the WebView2 window with no CMD box
+- **Native shell:** pywebview 6.2 main process + Edge WebView2 kernel; cold start < 2 s
+- **Full desktop contract:** own process icon (RT_ICON 7 sizes) + taskbar entry + Start menu shortcut + Programs & Features uninstall
+- **Distribution size:** ≈ 20 MB (Setup EXE) / ≈ 22 MB (portable ZIP) — vs. comparable Electron apps at 150 MB+
 
-### Multi-agent collaboration
+### Multi-agent orchestration
 
-- **11 permanent teammates** + **1 Foreman** + **1 Chief** = 13 agents total
-- Each teammate has their own **avatar, function, tone, and system prompt**
-- Foreman has three verbs: `discuss` (call a meeting), `hire` (dynamically onboard a new teammate), `execute` (invoke a real local CLI)
-- **Dynamic hiring:** when a task exceeds the current roster, Foreman writes a new system prompt and adds them to `dynamic_agents.json` — persisted across restarts.
+- **12 built-in agents:** Foreman (task dispatcher) + Chief (decision-maker) + 10 domain teammates (product, engineering, design, QA, data, support, legal, ops, HR, finance)
+- **Every agent independently configurable:** `name / role / emoji / color / system prompt / default_on`
+- **v1.6+: users fully self-serve agent creation** ⭐ — fill 6 fields in the GUI panel and a new teammate is registered, no need to have Foreman hire them at runtime
+- Foreman has three verbs: `discuss` (moderate multi-agent debate) · `hire` (Foreman-initiated onboarding) · `execute` (invoke real local CLI)
+- **Runtime-hired + user-created agents** both persist in `dynamic_agents.json` and appear on next boot
 
-### LLM provider abstraction
+### LLM provider abstraction layer
 
-- **10 providers, one-click switching:** OpenAI · Anthropic · DeepSeek · Kimi · Zhipu GLM · VolcEngine ARK · OpenRouter · Groq · Qwen · SiliconFlow
-- **Smart key-prefix detection:** paste `sk-ant-*` → instantly Anthropic, paste `sk-or-*` → instantly OpenRouter. When the prefix is ambiguous, the wizard drops a picker.
-- Supports both **OpenAI-compatible** and **Anthropic Messages** protocols
-- Change provider / model / key any time from the settings panel — no restart needed.
+- **14 providers:** OpenAI · Anthropic · DeepSeek · Kimi · Zhipu GLM · VolcEngine ARK · OpenRouter · Groq · Qwen · SiliconFlow · **Ollama** · **LM Studio** · **vLLM/TGI/llama.cpp server** · **Custom OpenAI-compatible endpoint**
+- **Protocols:** OpenAI Chat Completions (12 providers) + Anthropic Messages (1) + local self-hosted OpenAI-compat (4 share the same protocol)
+- **API key prefix detection:** `sk-ant-*` → Anthropic; `sk-or-*` → OpenRouter; `gsk_*` → Groq; ambiguous `sk-*` triggers a dropdown
+- **Key optional on local providers** (`key_optional=True`) — Ollama / LM Studio / vLLM typically don't validate keys; the UI proactively hints "leave blank"
+- **Endpoint fully overridable:** default to factory URL, or drop in your own (LAN IP / reverse proxy / corporate gateway)
+- **v1.6+: connectivity self-test button** ⭐ — one click fires a real request against unsaved config, returns `latency_ms` + model reply. Errors show full HTTP status + body
 
-### Auto-detected local Agent CLIs ⭐
+### Local Agent CLI abstraction ⭐
 
-- **Not locked into any single executor** — Foreman can delegate to whichever local coding agent you have installed.
-- On startup, Crew detects: Hermes, Claude Code, OpenAI Codex, OpenCode, Aider, Gemini CLI.
-- Switch the default executor from the settings panel. Uninstalled ones are greyed out.
-- Add a new CLI in a single dict entry in `agents_cli.py`.
+- **Executor decoupled:** Foreman hard-codes no single CLI — everything flows through `agents_cli.AgentSpec`
+- **6 built-ins:** Hermes · Claude Code · OpenAI Codex · OpenCode · Aider · Gemini CLI
+- **Startup auto-detection:** `shutil.which()` + npm global fallback + venv locations
+- **v1.6+: user-defined CLI + inline test-run button** ⭐ — 5-field form (id / name / command / args_template / homepage) registers any local agent; per-row "试跑 (Try)" button fires `Say hello in one line.` and shows stdout + latency in real time
+- **Args template system:** `{prompt}` placeholder supported; if omitted, the prompt is appended at the end
+- **Absolute path or PATH command** both accepted — `C:\Tools\myagent.exe` and `myagent` (via PATH) are equivalent
 
-### Real execution
+### Grounded execution + 3-tier permissions
 
-- When Foreman decides to actually *do the thing*, it shells out to the currently selected CLI: `hermes -z --yolo` / `claude -p` / `codex exec` / `opencode run` / `aider --yes` / `gemini -p`
-- Three permission tiers: **Strict** (approve every step) / **Balanced** (default) / **Auto** (Foreman decides)
-- Full audit chain: Foreman intent → approval card in UI → user approve/reject → logged to `team.db`
+- Foreman `execute` uses `asyncio.create_subprocess_exec` to spawn the selected CLI
+- stdout / stderr are streamed line-by-line back to the front-end message log
+- Three tiers: **Strict** (approve every step) · **Balanced** (default, approve sensitive ops) · **Auto** (Foreman decides)
+- Full audit chain: Foreman intent → UI approval card → user approve/reject → logged to `team.db`
 
-### Local-first
+### Local-first + data sovereignty
 
-- All writable data lives under `%APPDATA%\Crew\`: `config.json` / `.env` / `team.db` (SQLite) / `dynamic_agents.json`
-- **Nothing exposed externally** — the app binds only to `127.0.0.1:8765`. LAN access is deliberately disabled.
-- Uninstall keeps your data. Reinstall picks up where you left off.
+- Everything lives under `%APPDATA%\Crew\`: `config.json` (config) · `.env` (API keys) · `team.db` (SQLite messages + approvals) · `dynamic_agents.json` (custom agents)
+- **Zero external listener:** uvicorn binds only `127.0.0.1:8765`; LAN access requires an explicit code change
+- **Uninstall preserves data**; reinstall picks up where you left off (Inno Setup `UsePreviousData=yes`)
 
 ---
 
@@ -426,6 +433,88 @@ Restart, done.
 - `GET /api/config` also carries `local_agents` / `selected_local_agent` / `local_agent_ready`
 
 ---
+
+## 🧩 User Extension Points (v1.5+)
+
+Starting from v1.5, Crew opens three fully user-controllable extension channels — no code changes required.
+
+### 1. Custom LLM endpoint
+
+Any OpenAI Chat Completions-compatible service plugs in: Ollama, LM Studio, vLLM, TGI, llama.cpp server, corporate LLM gateway, reverse proxy, Cloudflare AI Gateway, etc.
+
+**UI path:** top-right ⚙ → Provider dropdown → pick **Ollama / LM Studio / vLLM / Custom OpenAI-compatible endpoint** → override the Endpoint field → fill Model name → leave API Key blank (or enter your internal token) → Save.
+
+**Connectivity self-test (v1.6+):** below the Endpoint field, a **"Test connection"** button fires a real `{role: user, content: ping}` request against the unsaved config and returns latency + model reply. Errors surface the full HTTP status + body — no log-diving.
+
+**API:**
+
+```bash
+# Test the values currently in the UI (does not persist)
+curl -X POST http://127.0.0.1:8765/api/providers/test \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"ollama","endpoint":"http://127.0.0.1:11434/v1/chat/completions","model":"llama3.2"}'
+# {"ok":true,"latency_ms":432,"model_reply":"pong","provider":"ollama",...}
+```
+
+### 2. Custom local Agent CLI
+
+Beyond the 6 built-ins, register arbitrary CLI executors.
+
+**UI path:** ⚙ Settings → under Local Executor Agent, click **"+ Add"** → 5 fields:
+
+| Field | Meaning | Example |
+|---|---|---|
+| `id` | Unique key (must not collide with built-ins) | `my-agent` |
+| `name` | Display name | `My Custom Agent` |
+| `command` | Absolute path or PATH command | `C:\Tools\myagent.exe` |
+| `args_template` | Args template, `{prompt}` = placeholder | `run --input {prompt} --yolo` |
+| `homepage` | Optional | — |
+
+**Test-run (v1.6+):** every custom agent row has a **"Try"** button that fires `Say hello in one line.` at the CLI with a 45-second timeout, then shows latency + first 120 chars of stdout inline. Verify immediately, don't open a real topic just to test.
+
+**Storage:** written to `config.json.custom_agents`. At runtime `agents_cli.detect_installed()` merges built-in + custom.
+
+**REST API:**
+
+```
+GET    /api/custom-agents            list all
+POST   /api/custom-agents            upsert one (by id)
+DELETE /api/custom-agents/<id>       delete one
+POST   /api/local-agents/test        test-run
+POST   /api/local-agents/select      set as default
+```
+
+### 3. Custom teammates (v1.6+) ⭐
+
+Previously only Foreman could "hire" new teammates (`hire` action, only at runtime). **v1.6 opens this to end users via a GUI panel** — the user is HR.
+
+**UI path:** top-right **👥 Team Roster** button → **+ Create new teammate** → 6 fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | English name, unique, cannot collide with built-ins (e.g. Vera / Nova / Milo) |
+| `role` | Function label (e.g. "Architect", "DBA", "Security Engineer") |
+| `emoji` | Avatar glyph (e.g. ⚙ ✦ ▲ ♢) |
+| `color` | Avatar background (native color picker) |
+| `system` | Full System Prompt (markdown-friendly; scope, style, boundaries) |
+| `default_on` | Auto-join new topics? (if off, must be @-mentioned or Foreman-hired) |
+
+**Storage:** written to `dynamic_agents.json`, synced into the in-memory `AGENTS` dict → immediately visible to the router (`router_system`), multi-agent discuss (`discuss`), and hiring (`hire`).
+
+**Edit & delete:** the same panel supports editing role/emoji/color/system of an existing custom teammate, or deleting them. The 12 built-in teammates cannot be deleted.
+
+**REST API:**
+
+```
+GET    /api/agents/custom            list {custom: [...], builtin: [...]}
+POST   /api/agents/custom            upsert (by name)
+DELETE /api/agents/custom/<name>     delete
+```
+
+**Built-in name protection:** POST with `name ∈ built-in 12` (Foreman/Pine/Ash/Wren/Owl/Chief/Rune/Poppy/Judge/Rally/Ivy/Ledger) returns 400.
+
+---
+
 
 ## 🔐 Permission Model
 

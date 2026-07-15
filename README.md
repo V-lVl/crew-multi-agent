@@ -1,12 +1,11 @@
-# Crew · 桌面级多 Agent 协作应用
+# Crew · 桌面级多 Agent 协作运行时
 
 **简体中文** · [English](./README.en.md)
 
-> 一个可以直接双击启动的桌面级多 Agent 协作应用。
-> 一位工头（Foreman）+ 一位老板（Chief）+ 11 位职能同事，
-> 在同一个原生窗口里完成 *讨论 → 招人 → 分派 → 执行 → 复盘* 的完整闭环。
-> 底层由本地 FastAPI + WebSocket 驱动，前端跑在 Microsoft Edge WebView2 里，
-> 执行阶段可无缝对接 **Hermes / Claude Code / OpenAI Codex / OpenCode / Aider / Gemini CLI** 等任意本地 Agent。
+> **一个把多 Agent 编排、多 LLM 抽象、多本地 CLI 桥接整合为单一桌面运行时的开源工程。**
+> 前端由 pywebview + WebView2 呈现原生窗口，后端为 FastAPI + WebSocket 双通道，
+> 内建 12 位领域 Agent（+ 用户可无限扩展），支持 14 家 LLM Provider（云端 10 家 + 本地/私有 4 家），
+> 执行层可无缝桥接 **Hermes / Claude Code / OpenAI Codex / OpenCode / Aider / Gemini CLI** 或任意用户自定义 CLI。
 
 <p align="left">
   <img src="https://img.shields.io/badge/platform-Windows%2010%2B-0078D6?logo=windows&logoColor=white" alt="Windows">
@@ -14,8 +13,9 @@
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/pywebview-6.2-4B8BBE" alt="pywebview">
   <img src="https://img.shields.io/badge/WebView2-Edge-0078D4?logo=microsoftedge&logoColor=white" alt="WebView2">
+  <img src="https://img.shields.io/badge/protocols-OpenAI%20%7C%20Anthropic%20%7C%20Ollama%20%7C%20vLLM-blueviolet" alt="protocols">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
-  <a href="https://github.com/IFConstantine/crew-multi-agent/releases/latest"><img src="https://img.shields.io/github/v/release/IFConstantine/crew-multi-agent" alt="Release"></a>
+  <a href="https://github.com/V-lVl/crew-multi-agent/releases/latest"><img src="https://img.shields.io/github/v/release/V-lVl/crew-multi-agent" alt="Release"></a>
 </p>
 
 ---
@@ -31,6 +31,7 @@
 - [工作流：Foreman 如何调度](#-工作流foreman-如何调度)
 - [支持的 LLM Provider](#-支持的-llm-provider)
 - [支持的本地 Agent CLI](#-支持的本地-agent-cli)
+- [用户自定义能力（v1.5+）](#-用户自定义能力v15)
 - [权限模型](#-权限模型)
 - [目录结构](#-目录结构)
 - [数据存储位置](#-数据存储位置)
@@ -44,63 +45,71 @@
 
 ## 🎯 项目定位
 
-**Crew 不是一个"多角色聊天玩具"，而是一个把 LLM 变成生产力工作台的桌面应用。**
+**Crew 定位为一款「Agent-native 桌面工作台」**——不是聊天机器人，而是一个可编程、可扩展、可分发的多 Agent 运行时。
 
-它解决三个真实痛点：
+它面向三类真实的工程 gap：
 
-1. **单 Agent 不够用**——真实工作需要产品、开发、设计、测试、法务、财务多角色协作，一个"通用 helper"无法覆盖。
-2. **多 Agent 框架都停留在命令行**——LangGraph、CrewAI、AutoGen 这些库工程门槛高，普通用户无法直接用。
-3. **Web 版体验不到位**——浏览器 tab、地址栏、书签栏都是干扰；桌面应用应该有自己的窗口、图标、任务栏入口。
+1. **单 Agent 覆盖不了多域协作**——生产任务通常横跨产品、开发、测试、法务、财务多个角色；单一 LLM prompt 无法沉淀专业上下文。Crew 用**多 Agent 编排 + 领域 System Prompt**把每个角色独立成有身份、有职能、有语气的 Actor。
+2. **既有多 Agent 框架工程门槛高**——LangGraph / CrewAI / AutoGen 是 SDK 库，交付物是"你自己写代码去跑"，无法直接分发给非工程用户。Crew 提供**编译好的桌面二进制** + 首次运行向导 + 图形化配置，覆盖到零代码用户。
+3. **执行层长期与推理层强耦合**——用户想让不同 Agent 去调不同的本地工具（Claude Code 写代码、Codex 跑测试、自建 CLI 处理内部数据），需要一个**开放的适配层**。Crew 在 `agents_cli.py` 里把执行器抽象成 `AgentSpec`，运行时探测 + 手动切换 + 用户自定义 CLI 全部覆盖。
 
-Crew 的定位：
+### 三个视角看 Crew
 
-- **产品视角**：一个能直接分发给非工程用户的 Windows 桌面应用（`.exe` 双击即用）
-- **工程视角**：一个可以自主定制、扩展 Agent、切换 LLM、桥接任意本地 CLI 的开源脚手架
-- **交互视角**：以"发布任务给一支团队"为心智模型，而不是"跟一个机器人聊天"
+| 视角 | 描述 |
+|---|---|
+| **产品** | Windows `.exe` 双击即用；20 MB 安装包；无终端窗口；有独立进程图标、任务栏入口、开始菜单、控制面板卸载项 |
+| **工程** | Python 3.11+ + FastAPI + WebSocket + SQLite + pywebview + WebView2，纯前端 HTML/JS 无框架，全栈可 hack |
+| **运行时** | 多 LLM Provider 抽象（OpenAI-compat / Anthropic Messages / 本地 OpenAI-compat）+ 多 CLI 执行器抽象（subprocess + args template）+ 三档审批权限 + 持久化会话 |
 
 ---
 
 ## ✨ 功能特性
 
-### 桌面原生体验
+### 桌面原生集成
 
-- **一次双击直接进入应用窗口**，不弹终端黑窗、无浏览器痕迹
-- 使用 [pywebview](https://pywebview.flowrl.com/) + Windows 10/11 内置的 **Edge WebView2** 渲染，安装包 ≈ 20 MB
-- 关闭窗口即完全退出，无后台残留
-- 独立应用图标、任务栏入口、开始菜单快捷方式、控制面板卸载入口——完全符合桌面软件规范
+- **无终端窗口**：`crew.exe` 的 PE Subsystem = 2（Windows GUI），启动即进入 WebView2 窗口，无 CMD 黑框
+- **原生外壳**：pywebview 6.2 主进程 + Edge WebView2 内核，冷启动 < 2 秒
+- **完整桌面契约**：独立进程图标（RT_ICON 7 尺寸）+ 任务栏条目 + 开始菜单快捷方式 + Programs & Features 卸载入口
+- **发行体积** ≈ 20 MB（Setup EXE）/ ≈ 22 MB（便携 ZIP）——对比同类 Electron 应用 150 MB+
 
-### 多 Agent 协作
+### 多 Agent 编排
 
-- **11 位常驻同事** + **1 位 Foreman（工头）** + **1 位 Chief（老板）** 共 13 个 Agent
-- 每位同事有独立的**头像、职能、语气、System Prompt**
-- Foreman 具备三种动作：`discuss`（组织讨论）、`hire`（动态招新）、`execute`（真调本地 CLI 落地）
-- **动态招新**：需求超出现有编制时，Foreman 会写一份 System Prompt 招入新同事，持久化到 `dynamic_agents.json`
+- **12 位内置 Agent**：Foreman（任务调度）+ Chief（决策者）+ 10 位领域同事（产品、开发、设计、测试、数据、客服、法务、运营、HR、财务）
+- **每位 Agent 独立可配置**：`name / role / emoji / color / system prompt / default_on`（默认是否在场）
+- **v1.6+：用户完全自主创建 Agent** ⭐——图形面板填 6 字段即注册新同事，无需通过 Foreman 招募
+- Foreman 三种动作：`discuss`（组织多 Agent 讨论）· `hire`（Foreman 主动补编）· `execute`（真调本地 CLI 落地任务）
+- **动态招募 + 用户创建的角色**统一存 `dynamic_agents.json`，重启后立即在场
 
-### LLM Provider 抽象
+### LLM Provider 抽象层
 
-- **10 家 provider 一键切换**：OpenAI · Anthropic · DeepSeek · Kimi · 智谱 GLM · 火山方舟 · OpenRouter · Groq · 通义千问 · SiliconFlow
-- **API key 前缀智能识别**：粘 `sk-ant-*` 直接判定为 Anthropic，粘 `sk-or-*` 判定为 OpenRouter，识别不了时弹下拉手选
-- **OpenAI 兼容 + Anthropic Messages** 两种协议同时支持
-- 主界面右上角设置面板可随时改 provider / model / key，无需重启
+- **14 家 provider**：OpenAI · Anthropic · DeepSeek · Kimi · 智谱 GLM · 火山方舟 · OpenRouter · Groq · 通义千问 · SiliconFlow · **Ollama** · **LM Studio** · **vLLM/TGI/llama.cpp server** · **自定义 OpenAI 兼容 endpoint**
+- **协议**：OpenAI Chat Completions（12 家）+ Anthropic Messages（1 家）+ 本地部署 OpenAI-compat（4 家共用协议）
+- **API Key 前缀智能识别**：粘 `sk-ant-*` → Anthropic；`sk-or-*` → OpenRouter；`gsk_*` → Groq；共享 `sk-*` 前缀时弹下拉手选
+- **本地部署 Key 可选**（`key_optional=True`）——Ollama / LM Studio / vLLM 一般不校验 key，UI 上主动提示"可留空"
+- **Endpoint 完全可覆盖**：默认走 provider 出厂 URL，用户填自己的 endpoint（局域网 IP / 反向代理 / 公司内部 gateway）即可
+- **v1.6+：连通性自测按钮** ⭐——填完 endpoint 一键测调用，直接返回 `latency_ms` + 模型响应，无需先保存再发消息试
 
-### 本地 Agent CLI 自动识别与切换 ⭐
+### 本地 Agent CLI 抽象层 ⭐
 
-- **不绑定单一执行器**——Foreman 可以调用系统里任意一款已装的本地 coding agent
-- **启动时自动探测**：Hermes、Claude Code、OpenAI Codex、OpenCode、Aider、Gemini CLI 都能被识别
-- **用户可在设置面板里手动切换**默认执行器，未安装的项灰掉不可选
-- 加新 CLI 只需在 `agents_cli.py` 的 `AGENT_SPECS` 列表里追加一条
+- **执行器解耦**：Foreman 不 hardcode 任何单一 CLI，全部走 `agents_cli.AgentSpec` 抽象
+- **6 家内置**：Hermes · Claude Code · OpenAI Codex · OpenCode · Aider · Gemini CLI
+- **启动时自动探测**：`shutil.which()` + 兜底 npm 全局路径 + venv 位置
+- **v1.6+：用户自定义 CLI + 现场试跑按钮** ⭐——图形面板填 5 字段（id / name / command / args_template / homepage）注册任意本地 agent；单条目"试跑"按钮直接拿 `Say hello in one line` 打一次，实时看 stdout + 延迟
+- **参数模板系统**：`args_template` 支持 `{prompt}` 占位符；缺占位符时 prompt 自动追加到末尾
+- **绝对路径 / PATH 命令名**都支持——`C:\Tools\myagent.exe` 与 `myagent`（走 PATH 查找）等价
 
-### 真实执行能力
+### 落地执行 + 三档权限
 
-- Foreman 决定"要真干"时，调用当前选中的本地 CLI（如 `hermes -z --yolo` / `claude -p` / `codex exec` / `opencode run` / `aider --yes` / `gemini -p`）在本地执行
-- 三档权限：**Strict**（每步都问）/ **Balanced**（默认）/ **Auto**（Foreman 全权）
-- 完整审批链：每一步 Foreman 意图 → 前端弹卡片 → 用户点批准/驳回 → 记录到 `team.db`
+- Foreman `execute` 时通过 `asyncio.create_subprocess_exec` 起子进程调用当前选中 CLI
+- stdout / stderr 按行流回前端，实时渲染到消息流
+- 三档权限：**Strict**（每步审批）· **Balanced**（默认，敏感操作审批）· **Auto**（Foreman 全权）
+- 完整审批链：Foreman 意图 → 前端弹卡片 → 用户点批准/驳回 → 记录到 `team.db`
 
-### 本地优先
+### 本地优先 + 数据主权
 
-- 所有数据存 `%APPDATA%\Crew\`：`config.json` / `.env` / `team.db`（SQLite）/ `dynamic_agents.json`
-- **对外零监听**：应用只在 `127.0.0.1:8765` 通信，局域网访问不了（需显式改代码开放）
-- 卸载不删数据，重装恢复现场
+- 全部数据存 `%APPDATA%\Crew\`：`config.json`（配置）· `.env`（API key）· `team.db`（SQLite 消息 + 审批）· `dynamic_agents.json`（自定义同事）
+- **对外零监听**：`uvicorn` 只绑 `127.0.0.1:8765`，局域网访问需显式改代码
+- **卸载不删数据**，重装恢复现场（Inno Setup 的 `UsePreviousData=yes`）
 
 ---
 
@@ -420,6 +429,88 @@ AgentSpec(
 - `GET /api/config` 里的 `local_agents` / `selected_local_agent` / `local_agent_ready` 字段同样反映探测状态
 
 ---
+
+## 🧩 用户自定义能力（v1.5+）
+
+Crew 从 v1.5 起把"扩展"下放到普通用户，无需改代码。三条独立通道：
+
+### 1. 自定义 LLM Endpoint
+
+任何 OpenAI Chat Completions 兼容的服务都可以接进来：Ollama、LM Studio、vLLM、TGI、llama.cpp server、公司内部 LLM gateway、反向代理、Cloudflare AI Gateway……
+
+**UI 路径**：右上角 ⚙ → Provider 下拉选 **Ollama / LM Studio / vLLM / 自定义 OpenAI 兼容 endpoint** → Endpoint 输入框改成你自己的地址 → Model 填模型名 → API Key 留空（或填内网 token）→ 保存
+
+**连通性自测（v1.6+）**：Endpoint 输入框下方有 **"连通性测一下"** 按钮，配置未保存前先发一次 `{role: user, content: ping}` 请求，返回延迟 + 模型 reply。失败时展示完整错误信息（HTTP 状态码 + body），排错不用去翻日志。
+
+**API：**
+
+```bash
+# 试跑当前 UI 上填的配置（不保存）
+curl -X POST http://127.0.0.1:8765/api/providers/test \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"ollama","endpoint":"http://127.0.0.1:11434/v1/chat/completions","model":"llama3.2"}'
+# {"ok":true,"latency_ms":432,"model_reply":"pong","provider":"ollama",...}
+```
+
+### 2. 自定义本地 Agent CLI
+
+除内置 6 家外，可注册任意 CLI 执行器。
+
+**UI 路径**：⚙ 设置 → 本地执行 Agent 下方 **"+ 添加"** → 5 字段：
+
+| 字段 | 说明 | 例 |
+|---|---|---|
+| `id` | 唯一标识（禁撞内置） | `my-agent` |
+| `name` | 显示名 | `My Custom Agent` |
+| `command` | 绝对路径或 PATH 命令 | `C:\Tools\myagent.exe` |
+| `args_template` | 参数模板，`{prompt}` 为占位符 | `run --input {prompt} --yolo` |
+| `homepage` | 可选 | — |
+
+**试跑（v1.6+）**：每条自定义 agent 行有 **"试跑"** 按钮，发一个 `Say hello in one line.` 到该 CLI，超时 45 秒。UI 里实时显示延迟 + stdout 前 120 字。写完立刻验证，不用打开真话题去测。
+
+**存储**：写入 `config.json.custom_agents` 数组。运行时 `agents_cli.detect_installed()` 合并内置 + 自定义。
+
+**REST API：**
+
+```
+GET    /api/custom-agents            列出所有
+POST   /api/custom-agents            upsert 一条 (by id)
+DELETE /api/custom-agents/<id>       删除一条
+POST   /api/local-agents/test        试跑
+POST   /api/local-agents/select      设为默认
+```
+
+### 3. 自定义同事（v1.6+）⭐
+
+之前只有 Foreman 才能"招人"（`hire` action，运行时才能触发）。**v1.6 把这条能力开放到用户，通过图形面板直接创建**——用户即"HR"。
+
+**UI 路径**：右上角 **👥 同事管理** 按钮 → **+ 创建新同事** → 6 字段：
+
+| 字段 | 说明 |
+|---|---|
+| `name` | 英文名，唯一，不能撞内置（如 Vera / Nova / Milo） |
+| `role` | 职能标签（如"架构师"、"DBA"、"安全工程师"） |
+| `emoji` | 头像字符（如 ⚙ ✦ ▲ ♢） |
+| `color` | 头像底色（原生 color picker） |
+| `system` | 完整 System Prompt（可 markdown，含职责、风格、边界） |
+| `default_on` | 是否新话题默认在场（不勾则要用户 @ 或让 Foreman 招入） |
+
+**存储**：写入 `dynamic_agents.json`，内存里同步进 `AGENTS` 字典 → 路由器 (`router_system`)、多人讨论 (`discuss`)、招募 (`hire`) 全部立即可见。
+
+**编辑 & 删除**：同一面板可编辑现有自定义同事的 role/emoji/color/system，或整个删除。内置 12 位不可删。
+
+**REST API：**
+
+```
+GET    /api/agents/custom            列出 {custom: [...], builtin: [...]}
+POST   /api/agents/custom            upsert (by name)
+DELETE /api/agents/custom/<name>     删除
+```
+
+**内置 name 保护**：POST 时若 `name ∈ 内置 12 位`（Foreman/Pine/Ash/Wren/Owl/Chief/Rune/Poppy/Judge/Rally/Ivy/Ledger），返回 400。
+
+---
+
 
 ## 🔐 权限模型
 

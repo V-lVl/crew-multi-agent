@@ -126,7 +126,7 @@
     content: "▚ ";
     color: var(--ink);
   }
-  /* 频道 tabs：讨论 / 总管 */
+  /* 频道 tabs：讨论 / 任务调度 */
   .channel-tabs {
     display: flex;
     flex-direction: column;
@@ -831,7 +831,7 @@
     <div class="logo">CREW</div>
     <button class="btn mini primary" id="new-topic">+ 新</button>
   </div>
-  <!-- 频道切换：讨论 / 总管 -->
+  <!-- 频道切换：讨论 / 任务调度 -->
   <div class="channel-tabs">
     <button class="ch-tab active" data-ch="team">
       <span class="ch-tab-emoji">◆</span>
@@ -844,7 +844,7 @@
       <span class="ch-tab-emoji">☗</span>
       <div class="ch-tab-info">
         <div class="ch-tab-name">Foreman</div>
-        <div class="ch-tab-sub">交给总管，自动分工</div>
+        <div class="ch-tab-sub">交给任务调度，自动分工</div>
       </div>
     </button>
   </div>
@@ -864,6 +864,8 @@
     <div class="right">
       <!-- 设置按钮：改 provider/model/key -->
       <button class="btn mini" id="settings-btn" title="设置 · provider / model / API key">⚙</button>
+      <!-- 同事管理按钮：创建 / 编辑 / 删除自定义同事 -->
+      <button class="btn mini" id="roster-btn" title="同事管理 · 创建自定义 Agent 同事">👥</button>
       <!-- 权限档位下拉 -->
       <div class="perm-picker" title="权限档位">
         <span class="perm-label">MODE</span>
@@ -946,6 +948,20 @@
     <div class="modal-foot">
       <button class="btn" id="settings-cancel">取消</button>
       <button class="btn primary" id="settings-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 同事管理面板 -->
+<div id="roster-modal" class="modal" style="display:none">
+  <div class="modal-bg" id="roster-bg"></div>
+  <div class="modal-panel wide">
+    <div class="modal-head">
+      <div class="modal-title">👥 同事管理 · Team Roster</div>
+    </div>
+    <div id="roster-body" class="modal-body"></div>
+    <div class="modal-foot">
+      <button class="btn" id="roster-close">关闭</button>
     </div>
   </div>
 </div>
@@ -1504,6 +1520,10 @@ async function openSettings() {
         <div class="ob-title">Endpoint（接口地址）</div>
         <div class="ob-desc">留空 = 用 provider 默认。本地部署改这里指到你自己的端口</div>
         <input type="text" id="set-endpoint" style="width:100%;margin-top:6px;font-family:monospace;font-size:12px" value="${currentEndpoint || ''}" placeholder="${currentProvider.default_endpoint || '留空 = 用默认'}">
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <button type="button" id="set-provider-test" style="font-size:12px;padding:4px 12px;cursor:pointer;background:#f6efe1;border:1px solid #333">连通性测一下</button>
+          <span id="set-provider-test-result" style="font-size:12px;color:#666"></span>
+        </div>
       </div>
     </div>
     <div class="ob-item">
@@ -1594,6 +1614,39 @@ async function openSettings() {
     }
   });
 
+  // 连通性自测按钮
+  document.getElementById('set-provider-test').onclick = async () => {
+    const btn = document.getElementById('set-provider-test');
+    const resultEl = document.getElementById('set-provider-test-result');
+    btn.disabled = true;
+    resultEl.style.color = '#666';
+    resultEl.textContent = '⏳ 测试中...';
+    try {
+      const r = await fetch('/api/providers/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          provider: providerSel.value,
+          endpoint: endpointInput.value.trim(),
+          model: modelInput.value.trim(),
+          api_key: keyInput.value.trim(),  // 空 = 用当前保存的
+        }),
+      }).then(r => r.json());
+      if (r.ok) {
+        resultEl.style.color = '#2a7d2a';
+        resultEl.innerHTML = `✓ ${r.latency_ms}ms · ${r.model} · <span style="font-family:monospace">${(r.model_reply||'').replace(/</g,'&lt;').slice(0,60)}</span>`;
+      } else {
+        resultEl.style.color = '#c33';
+        resultEl.textContent = '✗ ' + (r.reason || '失败').slice(0, 200);
+      }
+    } catch (e) {
+      resultEl.style.color = '#c33';
+      resultEl.textContent = '✗ ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
   // 输入 key 时实时识别
   let timer = null;
   keyInput.addEventListener('input', () => {
@@ -1648,8 +1701,12 @@ async function openSettings() {
             <b>${a.name}</b> <span style="color:#666">(id: ${a.id})</span>
             <div style="font-family:monospace;color:#666;font-size:11px;margin-top:2px">${a.command} ${a.args_template}</div>
             <div style="font-size:11px;color:${a.installed ? '#2a7d2a' : '#c33'}">${a.installed ? '✓ 探测到：' + a.path : '✗ 未找到'}</div>
+            <div class="ca-test-result" data-for="${a.id}" style="font-size:11px;color:#555;margin-top:4px"></div>
           </div>
-          <button type="button" data-del="${a.id}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <button type="button" data-run="${a.id}" style="font-size:11px;padding:2px 8px;cursor:pointer">试跑</button>
+            <button type="button" data-del="${a.id}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
+          </div>
         </div>
       `).join('');
       customList.querySelectorAll('[data-del]').forEach(btn => {
@@ -1657,9 +1714,34 @@ async function openSettings() {
           const id = btn.dataset.del;
           if (!confirm(`删除自定义 agent "${id}"？`)) return;
           await fetch('/api/custom-agents/' + encodeURIComponent(id), {method: 'DELETE'});
-          // 刷 UI + 刷本地 agent 下拉
           renderCustomList();
           await refreshLocalAgentDropdown();
+        };
+      });
+      customList.querySelectorAll('[data-run]').forEach(btn => {
+        btn.onclick = async () => {
+          const id = btn.dataset.run;
+          const resultEl = customList.querySelector(`.ca-test-result[data-for="${id}"]`);
+          resultEl.style.color = '#555';
+          resultEl.textContent = '⏳ 试跑中（最长 45 秒）...';
+          try {
+            const r = await fetch('/api/local-agents/test', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({agent_id: id, prompt: 'say hi in one line', timeout: 45}),
+            }).then(r => r.json());
+            if (r.ok) {
+              resultEl.style.color = '#2a7d2a';
+              const out = (r.output || '').slice(0, 120);
+              resultEl.innerHTML = `✓ ${r.elapsed_ms}ms · 输出: <span style="font-family:monospace">${out.replace(/</g,'&lt;')}</span>`;
+            } else {
+              resultEl.style.color = '#c33';
+              resultEl.textContent = '✗ ' + (r.reason || '失败');
+            }
+          } catch (e) {
+            resultEl.style.color = '#c33';
+            resultEl.textContent = '✗ ' + e.message;
+          }
         };
       });
     });
@@ -1745,6 +1827,128 @@ async function openSettings() {
 }
 
 document.getElementById('settings-btn').onclick = openSettings;
+
+// ─── 同事管理面板 ─────────────────────
+async function openRoster() {
+  const modal = document.getElementById('roster-modal');
+  const body = document.getElementById('roster-body');
+  const r = await fetch('/api/agents/custom').then(r => r.json());
+  const customs = r.custom || [];
+  const builtins = r.builtin || [];
+
+  const listHtml = customs.length === 0
+    ? '<div class="ob-desc" style="font-style:italic">还没有自定义同事。点下方"+ 创建新同事"来加。</div>'
+    : customs.map(a => `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fff9e8;margin-bottom:6px;border:1px solid #ccc">
+          <div style="width:36px;height:36px;background:${a.color};color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;border:2px solid #333">${a.emoji}</div>
+          <div style="flex:1">
+            <div><b>${a.name}</b> <span style="color:#666">· ${a.role}</span></div>
+            <div style="font-size:11px;color:#666;margin-top:2px;line-height:1.4">${(a.system||'').slice(0,120).replace(/</g,'&lt;')}${(a.system||'').length>120?'…':''}</div>
+          </div>
+          <button type="button" data-edit-agent="${a.name}" style="font-size:11px;padding:2px 8px;cursor:pointer">编辑</button>
+          <button type="button" data-del-agent="${a.name}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
+        </div>
+      `).join('');
+
+  body.innerHTML = `
+    <div style="margin-bottom:10px;color:#555;font-size:12px">
+      内置同事 <b>${builtins.length}</b> 位（Foreman/Pine/Ash/Wren/Owl/Chief/Rune/Poppy/Judge/Rally/Ivy/Ledger）不可删。
+      下方是你自己创建的同事。
+    </div>
+    <div id="custom-roster-list">${listHtml}</div>
+    <button type="button" id="add-roster-btn" style="margin-top:10px;padding:6px 14px;background:#ffd530;border:1px solid #333;cursor:pointer">+ 创建新同事</button>
+    <div id="roster-form" style="display:none;margin-top:14px;padding:12px;background:#fbf7ea;border:1px solid #999">
+      <div style="display:grid;grid-template-columns:110px 1fr;gap:8px 12px;font-size:13px;align-items:center">
+        <label>名字 <span style="color:#c33">*</span></label>
+        <input type="text" id="rf-name" placeholder="英文名，唯一，如 Vera / Nova / Milo（不能含空格）" style="padding:5px" maxlength="30">
+        <label>职能 <span style="color:#c33">*</span></label>
+        <input type="text" id="rf-role" placeholder="如：架构师 / DBA / 安全工程师" style="padding:5px" maxlength="20">
+        <label>Emoji</label>
+        <input type="text" id="rf-emoji" placeholder="如 ⚙ ✦ ▲ ♢（默认 ●）" style="padding:5px;width:80px" maxlength="4">
+        <label>颜色</label>
+        <input type="color" id="rf-color" value="#6b7280" style="padding:2px;width:60px;height:32px">
+        <label style="align-self:start;padding-top:5px">System Prompt <span style="color:#c33">*</span></label>
+        <textarea id="rf-system" placeholder="你是 XX，负责 XX。风格：说话简洁、直接、有依据。..." style="padding:6px;font-family:inherit;font-size:12px;min-height:120px;line-height:1.5"></textarea>
+        <label>默认在场</label>
+        <label style="font-size:12px;cursor:pointer"><input type="checkbox" id="rf-default-on"> 新话题自动加入</label>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+        <button type="button" id="rf-cancel" style="padding:5px 14px">取消</button>
+        <button type="button" id="rf-save" style="padding:5px 14px;background:#ffd530;border:1px solid #333;cursor:pointer">保存同事</button>
+      </div>
+    </div>
+    <div id="roster-msg" style="margin-top:10px;font-size:12px;min-height:1.4em"></div>
+  `;
+
+  const form = document.getElementById('roster-form');
+  const msg = document.getElementById('roster-msg');
+  let editingName = null;
+
+  function fillForm(a) {
+    document.getElementById('rf-name').value = a?.name || '';
+    document.getElementById('rf-name').disabled = !!a;  // 编辑时不改 name
+    document.getElementById('rf-role').value = a?.role || '';
+    document.getElementById('rf-emoji').value = a?.emoji || '';
+    document.getElementById('rf-color').value = a?.color || '#6b7280';
+    document.getElementById('rf-system').value = a?.system || '';
+    document.getElementById('rf-default-on').checked = !!(a?.default_on);
+    form.style.display = 'block';
+    editingName = a?.name || null;
+    msg.textContent = '';
+  }
+
+  document.getElementById('add-roster-btn').onclick = () => fillForm(null);
+  document.getElementById('rf-cancel').onclick = () => form.style.display = 'none';
+  document.querySelectorAll('[data-edit-agent]').forEach(b => {
+    b.onclick = () => {
+      const target = customs.find(a => a.name === b.dataset.editAgent);
+      if (target) fillForm(target);
+    };
+  });
+  document.querySelectorAll('[data-del-agent]').forEach(b => {
+    b.onclick = async () => {
+      const n = b.dataset.delAgent;
+      if (!confirm(`删除同事 "${n}"？该角色的历史消息保留但不能再被 @ 或加进话题。`)) return;
+      const r = await fetch('/api/agents/custom/' + encodeURIComponent(n), {method:'DELETE'});
+      if (r.ok) openRoster();  // 刷新
+      else alert('删除失败');
+    };
+  });
+  document.getElementById('rf-save').onclick = async () => {
+    const payload = {
+      name: document.getElementById('rf-name').value.trim(),
+      role: document.getElementById('rf-role').value.trim(),
+      emoji: document.getElementById('rf-emoji').value.trim() || '●',
+      color: document.getElementById('rf-color').value,
+      system: document.getElementById('rf-system').value.trim(),
+      default_on: document.getElementById('rf-default-on').checked,
+    };
+    if (!payload.name || !payload.role || !payload.system) {
+      msg.style.color = '#c33';
+      msg.textContent = '✗ 名字 / 职能 / System Prompt 都是必填';
+      return;
+    }
+    const r = await fetch('/api/agents/custom', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      msg.style.color = '#c33';
+      msg.textContent = '✗ ' + (j.detail || r.statusText);
+      return;
+    }
+    msg.style.color = '#2a7d2a';
+    msg.textContent = `✓ 保存成功：${payload.name}（${payload.role}）${editingName ? ' [已更新]' : ' [新增]'}`;
+    setTimeout(() => openRoster(), 600);  // 刷新面板
+  };
+
+  modal.style.display = 'flex';
+}
+document.getElementById('roster-btn').onclick = openRoster;
+document.getElementById('roster-close').onclick = () => document.getElementById('roster-modal').style.display = 'none';
+document.getElementById('roster-bg').onclick = () => document.getElementById('roster-modal').style.display = 'none';
 
 </script>
 </body>
