@@ -520,6 +520,39 @@
     padding: 6px 0;
     animation: fadeIn .2s ease-out;
   }
+
+  /* MCP tool call / result 卡片 —— 米色暖色调 + 黑硬描边 */
+  .tool-card {
+    margin: 6px 0 6px 52px;   /* 与消息头像对齐 */
+    padding: 8px 10px;
+    background: #f0e5c6;      /* 稍深米色 */
+    border: 2px solid #1a1a1a;
+    box-shadow: 3px 3px 0 #1a1a1a;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12.5px;
+    animation: fadeIn .2s ease-out;
+  }
+  .tool-card .tool-head {
+    display: flex; align-items: center; gap: 6px;
+    font-weight: bold; margin-bottom: 4px;
+    color: #1a1a1a;
+  }
+  .tool-card .tool-badge {
+    background: #DEAA0C; color: #1a1a1a;
+    padding: 1px 6px; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .tool-card .tool-badge.result { background: #a0d29c; }
+  .tool-card .tool-badge.error  { background: #e29b9b; }
+  .tool-card .tool-name { color: #7a5a00; }
+  .tool-card .tool-body {
+    white-space: pre-wrap; word-break: break-all;
+    max-height: 200px; overflow-y: auto;
+    color: #333;
+  }
+  .tool-card details summary {
+    cursor: pointer; color: #7a5a00; user-select: none;
+  }
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(2px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -866,6 +899,8 @@
       <button class="btn mini" id="usage-btn" title="今日 LLM 用量" style="font-size:11px">💰 —</button>
       <!-- 设置按钮：改 provider/model/key -->
       <button class="btn mini" id="settings-btn" title="设置 · provider / model / API key">⚙</button>
+      <!-- MCP 按钮 -->
+      <button class="btn mini" id="mcp-btn" title="MCP · 工具与服务器">🔧</button>
       <!-- 同事管理按钮：创建 / 编辑 / 删除自定义同事 -->
       <button class="btn mini" id="roster-btn" title="同事管理 · 创建自定义 Agent 同事">👥</button>
       <!-- 权限档位下拉 -->
@@ -958,6 +993,20 @@
     <div class="modal-foot">
       <button class="btn" id="settings-cancel">取消</button>
       <button class="btn primary" id="settings-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- MCP 面板 -->
+<div id="mcp-modal" class="modal" style="display:none">
+  <div class="modal-bg" id="mcp-bg"></div>
+  <div class="modal-panel wide">
+    <div class="modal-head">
+      <div class="modal-title">🔧 MCP · Model Context Protocol</div>
+    </div>
+    <div id="mcp-body" class="modal-body"></div>
+    <div class="modal-foot">
+      <button class="btn" id="mcp-close">关闭</button>
     </div>
   </div>
 </div>
@@ -1158,6 +1207,10 @@ function connectWs() {
       if (m.role === 'agent') refreshTopics();
     } else if (m.type === 'typing') {
       renderTyping(m);
+    } else if (m.type === 'tool_call') {
+      renderToolCall(m);
+    } else if (m.type === 'tool_result') {
+      renderToolResult(m);
     } else if (m.type === 'message_removed') {
       // regenerate 时：删掉最后一条 agent 消息
       const msgs = messagesEl.querySelectorAll('.msg');
@@ -1281,6 +1334,50 @@ function renderMessage(m) {
   }
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// ─── MCP tool call / result 卡片 ────────────────
+function renderToolCard(html) {
+  const div = document.createElement('div');
+  div.className = 'tool-card';
+  div.innerHTML = html;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function renderToolCall(m) {
+  const agent = escapeHTML(m.agent || '');
+  const tool = escapeHTML(m.tool || '');
+  const iter = m.iteration || 1;
+  const argsJson = escapeHTML(JSON.stringify(m.args || {}, null, 2));
+  renderToolCard(`
+    <div class="tool-head">
+      <span class="tool-badge">TOOL CALL #${iter}</span>
+      <span>${agent} →</span>
+      <span class="tool-name">${tool}</span>
+    </div>
+    <details><summary>参数 (${Object.keys(m.args || {}).length})</summary>
+      <div class="tool-body">${argsJson}</div>
+    </details>
+  `);
+}
+
+function renderToolResult(m) {
+  const agent = escapeHTML(m.agent || '');
+  const tool = escapeHTML(m.tool || '');
+  const isErr = !!m.is_error;
+  const text = escapeHTML(m.text_preview || '');
+  const badgeCls = isErr ? 'error' : 'result';
+  const badgeText = isErr ? 'ERROR' : 'RESULT';
+  renderToolCard(`
+    <div class="tool-head">
+      <span class="tool-badge ${badgeCls}">${badgeText}</span>
+      <span class="tool-name">${tool}</span>
+      <span>→ ${agent}</span>
+    </div>
+    <div class="tool-body">${text}</div>
+  `);
 }
 
 function renderTyping(m) {
@@ -1950,6 +2047,151 @@ async function openSettings() {
 }
 
 document.getElementById('settings-btn').onclick = openSettings;
+document.getElementById('mcp-btn').onclick = openMCP;
+document.getElementById('mcp-close').onclick = () => document.getElementById('mcp-modal').style.display = 'none';
+document.getElementById('mcp-bg').onclick = () => document.getElementById('mcp-modal').style.display = 'none';
+
+// ─── MCP 面板 ────────────────────────────────────
+async function openMCP() {
+  const modal = document.getElementById('mcp-modal');
+  const body = document.getElementById('mcp-body');
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="padding:20px;text-align:center">加载中…</div>';
+  try {
+    const d = await (await fetch('/api/mcp/servers')).json();
+    renderMCPBody(d.servers, d.agent_tools);
+  } catch (e) {
+    body.innerHTML = `<div style="padding:20px;color:#c33">加载失败：${escapeHTML(String(e))}</div>`;
+  }
+}
+
+function renderMCPBody(servers, agentTools) {
+  const body = document.getElementById('mcp-body');
+  const statusColor = {running:'#4a7', stopped:'#888', dead:'#c33', starting:'#DEAA0C'};
+  let html = `
+    <div style="margin-bottom:12px;font-size:13px;color:#555">
+      MCP 让 agent 能调用外部工具（读文件、抓网页、执行命令等）。开关 server 会立即生效。
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:#f0e5c6;border-bottom:2px solid #1a1a1a;text-align:left">
+          <th style="padding:8px">名称</th>
+          <th style="padding:8px">状态</th>
+          <th style="padding:8px">工具</th>
+          <th style="padding:8px">描述</th>
+          <th style="padding:8px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+  for (const s of servers) {
+    const color = statusColor[s.status] || '#888';
+    const enabledCheck = `<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px">
+        <input type="checkbox" data-mcp-toggle="${escapeHTML(s.name)}" ${s.enabled ? 'checked' : ''}>
+        启用
+      </label>`;
+    const restartBtn = s.status === 'running'
+      ? `<button class="btn mini" data-mcp-restart="${escapeHTML(s.name)}" style="margin-left:6px">重启</button>`
+      : '';
+    const toolNames = s.tools.map(t => `<code style="font-size:11px">${escapeHTML(t.name)}</code>`).join(' ');
+    const err = s.last_error
+      ? `<div style="color:#c33;font-size:11px;margin-top:4px">⚠ ${escapeHTML(s.last_error.slice(0, 100))}</div>`
+      : '';
+    html += `
+      <tr style="border-bottom:1px solid #ddd;vertical-align:top">
+        <td style="padding:8px"><strong>${escapeHTML(s.name)}</strong></td>
+        <td style="padding:8px;color:${color}"><strong>${escapeHTML(s.status)}</strong>${err}</td>
+        <td style="padding:8px">${toolNames || '<span style="color:#999">—</span>'}</td>
+        <td style="padding:8px;color:#555;font-size:12px">${escapeHTML(s.description)}</td>
+        <td style="padding:8px;white-space:nowrap">${enabledCheck}${restartBtn}</td>
+      </tr>
+    `;
+  }
+  html += `</tbody></table>`;
+
+  // 权限表
+  html += `
+    <div style="margin-top:20px">
+      <div style="font-weight:bold;margin-bottom:6px">🔐 权限（agent → 允许的工具 glob）</div>
+      <div style="font-size:12px;color:#555;margin-bottom:8px">
+        用 <code>server.tool</code> 或 <code>server.*</code> 或 <code>*</code>。
+        通配 agent <code>*</code> = 所有 agent 默认权限（含未列出的 agent）。
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <tbody id="mcp-agent-tools-body">
+  `;
+  const agents = Object.keys(agentTools).sort();
+  for (const a of agents) {
+    const patterns = agentTools[a].join(', ');
+    html += `
+      <tr style="border-bottom:1px solid #eee">
+        <td style="padding:6px;width:100px"><strong>${escapeHTML(a)}</strong></td>
+        <td style="padding:6px">
+          <input type="text" data-mcp-agent="${escapeHTML(a)}"
+                 value="${escapeHTML(patterns)}"
+                 style="width:calc(100% - 80px);padding:4px;border:1px solid #999;font-family:monospace;font-size:12px">
+          <button class="btn mini" data-mcp-save-agent="${escapeHTML(a)}">保存</button>
+        </td>
+      </tr>
+    `;
+  }
+  html += `
+        </tbody>
+      </table>
+      <div style="margin-top:8px">
+        <input type="text" id="mcp-new-agent" placeholder="新 agent 名"
+               style="padding:4px;border:1px solid #999;width:120px">
+        <input type="text" id="mcp-new-patterns" placeholder="例如 time.now, fetch.*"
+               style="padding:4px;border:1px solid #999;width:200px;font-family:monospace">
+        <button class="btn mini" id="mcp-add-agent">添加</button>
+      </div>
+    </div>
+  `;
+  body.innerHTML = html;
+
+  // 绑事件
+  body.querySelectorAll('[data-mcp-toggle]').forEach(cb => {
+    cb.onchange = async () => {
+      const name = cb.dataset.mcpToggle;
+      cb.disabled = true;
+      await fetch(`/api/mcp/servers/${encodeURIComponent(name)}/enable`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({enabled: cb.checked})
+      });
+      openMCP();  // 刷新
+    };
+  });
+  body.querySelectorAll('[data-mcp-restart]').forEach(btn => {
+    btn.onclick = async () => {
+      const name = btn.dataset.mcpRestart;
+      btn.disabled = true; btn.textContent = '…';
+      await fetch(`/api/mcp/servers/${encodeURIComponent(name)}/restart`, {method:'POST'});
+      openMCP();
+    };
+  });
+  body.querySelectorAll('[data-mcp-save-agent]').forEach(btn => {
+    btn.onclick = async () => {
+      const a = btn.dataset.mcpSaveAgent;
+      const input = body.querySelector(`[data-mcp-agent="${CSS.escape(a)}"]`);
+      const patterns = (input.value || '').split(',').map(s => s.trim()).filter(Boolean);
+      await fetch('/api/mcp/agent_tools', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({agent: a, patterns})
+      });
+      btn.textContent = '✓'; setTimeout(()=>btn.textContent='保存', 1000);
+    };
+  });
+  document.getElementById('mcp-add-agent').onclick = async () => {
+    const a = document.getElementById('mcp-new-agent').value.trim();
+    const patterns = document.getElementById('mcp-new-patterns').value.split(',').map(s=>s.trim()).filter(Boolean);
+    if (!a) return alert('agent 名不能为空');
+    await fetch('/api/mcp/agent_tools', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({agent: a, patterns})
+    });
+    openMCP();
+  };
+}
 
 // ─── 附件上传 ────────────────────────────
 const attachBtn = document.getElementById('attach-btn');

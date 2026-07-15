@@ -515,6 +515,77 @@ DELETE /api/agents/custom/<name>     delete
 
 ---
 
+## 🔧 MCP · Model Context Protocol (v2.0+)
+
+Starting v2.0, agents can **call tools** — read files, fetch URLs, run commands, check time, etc. Based on Anthropic's MCP standard; compatible with any conforming external server.
+
+### 4 Built-in Servers (Python, zero external deps)
+
+| Server | Default | Purpose |
+|---|---|---|
+| **time** | ✅ on | Current time + timezone conversion |
+| **fetch** | ✅ on | HTTP GET URL text |
+| **filesystem** | ⚙️ off | Sandboxed file R/W (root: `%APPDATA%\Crew\workspace`) |
+| **shell** | ⚙️ off | Whitelisted command exec (`ls`/`git`/`curl`/… read-only) |
+
+The last two are off by default for safety; toggle in the 🔧 panel.
+
+### Three-Layer Security
+
+1. **Protocol**: `subprocess exec + list argv`, no shell — immune to command injection
+2. **Sandbox**: filesystem has a root cage (path escapes blocked); shell has command whitelist
+3. **Permission**: per-agent × per-tool, glob patterns (e.g. `Owl` limited to `filesystem.read_file`)
+
+### Prompt-based Tool Calling
+
+Not dependent on provider-specific native function calling — uses a fenced code block protocol:
+
+```
+User: What time is it in Shanghai?
+
+Ash: ```tool_call
+     {"tool": "time.now", "args": {"tz": "Asia/Shanghai"}}
+     ```
+
+System: [tool_result] time.now ✓ 2026-07-15 14:42:55 CST
+
+Ash: Current Shanghai time is 14:42:55.
+```
+
+**Benefits**: works across all 14 providers (including local Ollama small models); no Anthropic/OpenAI tool-schema differences to juggle.
+
+### Frontend UX
+
+- **🔧 MCP panel**: one-click server toggle, view tools, edit per-agent permissions
+- **Message cards**: `TOOL CALL #1 · Ash → time.now` / `RESULT · 2026-07-15 14:42:55` — full visibility
+
+### Self-Healing + Loop Cap
+
+- Dead server → auto-restart on next call
+- Per-turn tool-call cap: **5** (prevents runaway loops)
+
+### External Servers
+
+Any MCP-protocol server works. Edit `%APPDATA%\Crew\mcp_servers.json`:
+
+```json
+{
+  "servers": [
+    {
+      "name": "github",
+      "enabled": true,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_TOKEN": "ghp_..."}
+    }
+  ]
+}
+```
+
+Community list: [modelcontextprotocol.io/servers](https://modelcontextprotocol.io/servers)
+
+---
+
 ## 🛡️ Runtime Hardening (v1.7+)
 
 Starting v1.7, Crew moves from "it runs" to "production-ready":

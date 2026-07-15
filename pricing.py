@@ -19,7 +19,7 @@ PRICING: dict[str, dict] = {
     "deepseek":     {"input": 0.14,  "output": 0.28,  "max_context": 64000},   # deepseek-chat
     "kimi":         {"input": 0.14,  "output": 0.14,  "max_context": 128000},  # moonshot-v1-8k 起步价
     "zhipu":        {"input": 0.10,  "output": 0.10,  "max_context": 128000},  # glm-4-flash
-    "ark":          {"input": 0.60,  "output": 2.00,  "max_context": 128000},  # ark-code-latest
+    "ark":          {"input": 0.60,  "output": 2.00,  "max_context": 256000},  # doubao-seed-1-6 兜底
     "openrouter":   {"input": 0.50,  "output": 1.50,  "max_context": 128000},  # 按目标模型，此处兜底
     "groq":         {"input": 0.05,  "output": 0.08,  "max_context": 128000},  # llama-3.1-8b
     "qwen":         {"input": 0.28,  "output": 0.83,  "max_context": 32000},   # qwen-max

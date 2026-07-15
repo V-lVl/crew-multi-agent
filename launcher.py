@@ -11,6 +11,10 @@
   5. 主线程用 pywebview 开一个原生窗口
   6. 关窗即退出
 
+特殊模式：crew.exe --mcp-server <kind> [args...]
+  作为 MCP subprocess server 启动。用于打包版 mcp_registry 拉起内置 server。
+  这条分支在 pywebview / uvicorn / 数据目录初始化之前执行——尽量轻。
+
 pywebview 必须在主线程运行（Windows COM 要求）。
 """
 from __future__ import annotations
@@ -21,6 +25,30 @@ import time
 import threading
 import socket
 from pathlib import Path
+
+
+# ── MCP subprocess 模式：早于任何 GUI/网络初始化 ─────────
+# 命令行：crew.exe --mcp-server <time|fetch|filesystem|shell> [args...]
+if len(sys.argv) >= 3 and sys.argv[1] == "--mcp-server":
+    # 打包 onedir 版：mcp_builtin_servers.py 会被 PyInstaller 收进 pyz，
+    # 直接 import 即可。console=False 打包版里 sys.stdout 可能是 None，
+    # 需要用 os 级 FD（打包时 console=True 才有 stdout；MCP subprocess 必须能写 stdout）。
+    # 由于 crew.exe 是 console=False，我们直接绕开：MCP subprocess 需要自己的 stdout/stdin。
+    # PyInstaller onedir 中，子进程会继承父进程 stdio。父进程用 subprocess 拉起时会 pipe stdout。
+    # 但 console=False 的 exe 没有真正的 stdout FD —— 关键！
+    # 解决：subprocess.PIPE 会为 stdout 分配匿名管道，此时 sys.stdout 可正常 write。
+    # 保险起见：确保 sys.stdout / sys.stdin 二进制模式可用。
+    try:
+        # 让 stdout 使用 UTF-8（Windows 默认 GBK，MCP JSON 需要 UTF-8）
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    # 剥离 --mcp-server 参数，让 mcp_builtin_servers.main 看到正常的 argv
+    sys.argv = [sys.argv[0]] + sys.argv[2:]
+    from mcp_builtin_servers import main as _mcp_main
+    _mcp_main()
+    sys.exit(0)
 
 
 APP_NAME = "Crew"

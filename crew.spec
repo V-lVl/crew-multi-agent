@@ -36,6 +36,9 @@ hiddenimports = [
     "providers",
     "supervisor",
     "server",
+    "mcp_client",
+    "mcp_registry",
+    "mcp_builtin_servers",
     # pywebview 桌面版
     "webview",
     "webview.platforms.winforms",

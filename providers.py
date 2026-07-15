@@ -22,7 +22,7 @@ PROVIDERS: dict[str, dict] = {
     "ark": {
         "name": "火山方舟 (ARK)",
         "endpoint": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-        "default_model": "ark-code-latest",
+        "default_model": "doubao-seed-1-6-250615",
         "key_hint": None,  # ARK 的 key 没有稳定前缀
         "uniquely_identified": False,
         "protocol": "openai",

@@ -99,6 +99,13 @@ import providers as _providers
 import attachments as _attachments
 _attachments.set_attachments_dir(ATTACHMENTS_DIR)
 
+# ─── MCP registry（v2.0） ───────────────────────────────────
+from mcp_registry import MCPRegistry
+from mcp_client import MCPError as _MCPError
+MCP_CONFIG_PATH = DATA_DIR / "mcp_servers.json"
+mcp_registry = MCPRegistry(MCP_CONFIG_PATH)
+mcp_registry.load_config()
+
 # 优先从 CONFIG 里读，其次从 .env 兼容旧 ARK_API_KEY，最后为空
 def _get_current_llm() -> tuple[str, str, str, str]:
     """返回 (provider_id, api_key, endpoint, model)"""
@@ -609,10 +616,160 @@ async def agent_reply(agent: str) -> None:
     async with room.lock:
         await room.push_typing(agent, True)
         try:
-            reply = await call_ark(room.build_context(agent), agent_name=agent)
+            reply = await agent_reply_with_tools(agent)
         finally:
             await room.push_typing(agent, False)
         await room.push_message("agent", agent, reply)
+
+
+# ─── MCP tool call 循环 ─────────────────────────────────────
+import re as _re
+
+TOOL_CALL_PATTERN = _re.compile(
+    r"```tool_call\s*\n(\{.*?\})\s*\n```", _re.DOTALL
+)
+
+MAX_TOOL_ITERATIONS = 5
+
+
+def _build_tools_prompt(agent: str) -> str:
+    """给 agent 生成 tool 使用说明。如果它没有任何工具，返回空串。"""
+    tools = mcp_registry.tools_for_agent(agent)
+    if not tools:
+        return ""
+
+    lines = [
+        "",
+        "# 你有以下工具可用（MCP）",
+        "",
+        "想调用工具时，输出一个 fenced code block，语言标 `tool_call`，内容是一行 JSON：",
+        "",
+        "```tool_call",
+        '{"tool": "<qualified_name>", "args": {...}}',
+        "```",
+        "",
+        "然后**立即停止输出**，等系统返回工具结果。你会在下一轮收到结果，再决定继续调用工具还是给最终回复。",
+        "调用工具时不要输出其他解释文字，只输出这一个 code block。",
+        "**不需要工具时**：直接正常回复。不要滥用工具。",
+        "",
+        "## 工具列表",
+        "",
+    ]
+    for t in tools:
+        lines.append(f"### `{t['qualified_name']}`")
+        if t.get("description"):
+            lines.append(t["description"])
+        schema = t.get("inputSchema") or {}
+        props = schema.get("properties") or {}
+        if props:
+            lines.append("参数：")
+            for p_name, p_spec in props.items():
+                p_type = p_spec.get("type", "any")
+                p_desc = p_spec.get("description", "")
+                required = p_name in (schema.get("required") or [])
+                mark = "（必填）" if required else ""
+                lines.append(f"  · `{p_name}` ({p_type}){mark}：{p_desc}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _extract_tool_call(text: str) -> dict | None:
+    """从 LLM 文本里抠出 tool_call JSON。找不到返回 None。"""
+    m = TOOL_CALL_PATTERN.search(text)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or "tool" not in data:
+        return None
+    return data
+
+
+def _format_tool_result(qualified_name: str, result: dict) -> str:
+    """把 MCP tool 结果转成给 LLM 看的下一轮 user 消息文本。"""
+    is_error = bool(result.get("isError"))
+    parts = []
+    for block in result.get("content", []):
+        if block.get("type") == "text":
+            parts.append(block.get("text", ""))
+    text = "\n".join(parts) or "(工具没返回内容)"
+    if is_error:
+        return f"[tool_result] {qualified_name} ❌ 出错：\n{text}"
+    return f"[tool_result] {qualified_name} ✓ 结果：\n{text}"
+
+
+async def agent_reply_with_tools(agent: str) -> str:
+    """让某 agent 回复；如果它调用工具，就跑循环直到给出终稿。
+
+    返回：最终给用户看的文本。
+    """
+    tools_prompt = _build_tools_prompt(agent)
+    base_context = room.build_context(agent)
+
+    # 把 tools_prompt 拼进 system message（第一条）
+    if tools_prompt and base_context and base_context[0]["role"] == "system":
+        # 处理 system message 可能是 str 或 list（多模态）
+        sys_content = base_context[0]["content"]
+        if isinstance(sys_content, str):
+            base_context[0]["content"] = sys_content + "\n" + tools_prompt
+        elif isinstance(sys_content, list):
+            base_context[0]["content"].append({"type": "text", "text": tools_prompt})
+
+    # tool call 循环
+    conversation = list(base_context)  # working copy
+    for iteration in range(MAX_TOOL_ITERATIONS):
+        reply = await call_ark(conversation, agent_name=agent)
+        tool_call = _extract_tool_call(reply)
+
+        if not tool_call:
+            # 无工具调用 —— 就是终稿
+            return reply
+
+        qname = tool_call.get("tool", "")
+        args = tool_call.get("args") or {}
+
+        # 广播 tool_call 事件给前端（展示卡片）
+        await room.broadcast({
+            "type": "tool_call",
+            "agent": agent,
+            "tool": qname,
+            "args": args,
+            "iteration": iteration + 1,
+            "ts": time.time(),
+        })
+
+        # 调用工具
+        try:
+            result = await mcp_registry.call_tool(qname, args, agent_name=agent)
+            result_text = _format_tool_result(qname, result)
+            is_error = bool(result.get("isError"))
+        except _MCPError as e:
+            result_text = f"[tool_result] {qname} ❌ 出错：{e}"
+            is_error = True
+
+        # 广播 tool_result 事件
+        await room.broadcast({
+            "type": "tool_result",
+            "agent": agent,
+            "tool": qname,
+            "is_error": is_error,
+            "text_preview": (result_text[:300] + "…") if len(result_text) > 300 else result_text,
+            "ts": time.time(),
+        })
+
+        # 把这轮 assistant + user (工具结果) 塞进 conversation，继续下一轮
+        conversation.append({"role": "assistant", "content": reply})
+        conversation.append({"role": "user", "content": result_text})
+
+    # 循环上限：强制收尾
+    conversation.append({
+        "role": "user",
+        "content": "（工具调用次数达上限，请基于已有信息给出最终回复，别再调工具了）",
+    })
+    return await call_ark(conversation, agent_name=agent)
 
 
 async def summarize_topic(topic_id: int | None = None, history: list[dict] | None = None) -> None:
@@ -862,7 +1019,23 @@ async def supervisor_reply(user_text: str) -> None:
 
 
 # ─────────────────────────── HTTP / WS ───────────────────────────
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(_app):
+    # 启动：把 enabled MCP server 都拉起来
+    try:
+        await mcp_registry.start_all_enabled()
+    except Exception as e:
+        print(f"[mcp] start_all_enabled 出错但不阻塞：{e}")
+    yield
+    # 关闭：优雅关掉所有 MCP subprocess
+    try:
+        await mcp_registry.stop_all()
+    except Exception:
+        pass
+
+app = FastAPI(lifespan=lifespan)
 static_dir = ASSETS_DIR / "static"
 
 from fastapi.staticfiles import StaticFiles
@@ -1168,6 +1341,72 @@ async def upload_attachment(payload: dict) -> dict:
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ─── MCP API（v2.0） ────────────────────────────────────────
+@app.get("/api/mcp/servers")
+async def mcp_list_servers() -> dict:
+    """列出所有配置的 MCP server + 状态 + tools。"""
+    return {"servers": mcp_registry.list_servers(),
+            "agent_tools": dict(mcp_registry.agent_tools)}
+
+
+@app.post("/api/mcp/servers/{name}/enable")
+async def mcp_enable_server(name: str, payload: dict = None) -> dict:
+    payload = payload or {}
+    enabled = bool(payload.get("enabled", True))
+    ok, msg = await mcp_registry.set_enabled(name, enabled)
+    return {"ok": ok, "msg": msg,
+            "server": mcp_registry.servers[name].to_public() if name in mcp_registry.servers else None}
+
+
+@app.post("/api/mcp/servers/{name}/restart")
+async def mcp_restart_server(name: str) -> dict:
+    ok, msg = await mcp_registry.restart(name)
+    return {"ok": ok, "msg": msg,
+            "server": mcp_registry.servers[name].to_public() if name in mcp_registry.servers else None}
+
+
+@app.get("/api/mcp/tools")
+async def mcp_all_tools() -> dict:
+    """所有 running server 的完整工具列表。"""
+    return {"tools": mcp_registry.all_tools()}
+
+
+@app.get("/api/mcp/tools/{agent}")
+async def mcp_tools_for_agent(agent: str) -> dict:
+    """某个 agent 能看到的工具（权限过滤后）。"""
+    return {"agent": agent, "tools": mcp_registry.tools_for_agent(agent)}
+
+
+@app.post("/api/mcp/agent_tools")
+async def mcp_set_agent_tools(payload: dict) -> dict:
+    """设置 agent → tool patterns 映射。
+    body: {agent: str, patterns: list[str]}   patterns 为空 = 移除该 agent 的权限
+    """
+    agent = payload.get("agent", "")
+    patterns = list(payload.get("patterns") or [])
+    if not agent:
+        return {"ok": False, "msg": "agent 必填"}
+    mcp_registry.set_agent_tools(agent, patterns)
+    return {"ok": True, "agent_tools": dict(mcp_registry.agent_tools)}
+
+
+@app.post("/api/mcp/call")
+async def mcp_call_tool(payload: dict) -> dict:
+    """手动调用一个工具（用于前端"试运行"按钮）。
+    body: {tool: 'server.tool_name', args: {...}, agent?: str}
+    """
+    tool = payload.get("tool", "")
+    args = payload.get("args") or {}
+    agent = payload.get("agent", "")   # 空 = 跳过权限校验
+    if not tool:
+        return {"ok": False, "msg": "tool 必填"}
+    try:
+        result = await mcp_registry.call_tool(tool, args, agent_name=agent)
+        return {"ok": True, "result": result}
+    except _MCPError as e:
+        return {"ok": False, "msg": str(e)}
 
 
 @app.get("/api/agents/permissions")

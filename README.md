@@ -511,6 +511,77 @@ DELETE /api/agents/custom/<name>     删除
 
 ---
 
+## 🔧 MCP · Model Context Protocol（v2.0+）
+
+从 v2.0 起，agent 可以**调用工具**——读文件、抓网页、执行命令、查时间等。基于 Anthropic 提出的 MCP 协议标准，可对接任何遵循协议的外部 server。
+
+### 开箱 4 个内置 Server（Python，零外部依赖）
+
+| Server | 默认 | 用途 |
+|---|---|---|
+| **time** | ✅ 开 | 当前时间 + 时区转换 |
+| **fetch** | ✅ 开 | HTTP GET 抓 URL 文本 |
+| **filesystem** | ⚙️ 关 | 沙箱内文件读写（沙箱路径 `%APPDATA%\Crew\workspace`） |
+| **shell** | ⚙️ 关 | 白名单命令执行（`ls`/`git`/`curl`/… 只读命令） |
+
+后两个默认关闭是出于安全考虑，用户在 🔧 面板一键启用。
+
+### 三层安全设计
+
+1. **协议层**：`subprocess exec + list argv`，不走 shell，天然免疫命令注入
+2. **沙箱层**：filesystem 有 root 目录限制，路径逃逸被拦；shell 有命令白名单
+3. **权限层**：per-agent × per-tool，用 glob 精细控制（如 `Owl` 只能 `filesystem.read_file`）
+
+### Prompt-based Tool Calling
+
+不依赖 provider 的 native function calling —— 用 fenced code block 协议：
+
+```
+用户: 现在北京几点？
+
+Ash: ```tool_call
+     {"tool": "time.now", "args": {"tz": "Asia/Shanghai"}}
+     ```
+
+系统: [tool_result] time.now ✓ 2026-07-15 14:42:55 CST
+
+Ash: 当前北京时间是 14:42:55。
+```
+
+**优点**：14 家 provider 全兼容（包括本地 Ollama 小模型），不受 Anthropic/OpenAI tool schema 差异折磨。
+
+### 前端体验
+
+- **🔧 MCP 面板**：一键开关 server、看 tools、编辑 agent 权限
+- **消息流卡片**：`TOOL CALL #1 · Ash → time.now` / `RESULT · 2026-07-15 14:42:55`——用户全程可见 agent 在调啥、拿到啥
+
+### 自愈 + 循环上限
+
+- Server 挂了下次调用**自动重启**，不用手动救
+- 单次会话 tool call 上限 **5 次**，防止 LLM 无限循环烧 token
+
+### 扩展外部 Server
+
+任何 MCP 协议的 server 都能接。编辑 `%APPDATA%\Crew\mcp_servers.json`：
+
+```json
+{
+  "servers": [
+    {
+      "name": "github",
+      "enabled": true,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_TOKEN": "ghp_..."}
+    }
+  ]
+}
+```
+
+社区 server 列表见 [modelcontextprotocol.io/servers](https://modelcontextprotocol.io/servers)。
+
+---
+
 ## 🛡️ 运行时保障（v1.7+）
 
 从 v1.7 起，运行时能力从"能跑"升级到"生产可用"：
