@@ -291,6 +291,8 @@ flowchart TB
 
 ## 🔌 Supported LLM Providers
 
+### Cloud APIs (10 providers)
+
 | Provider | Default model | Key prefix detection | Protocol |
 |---|---|---|---|
 | **VolcEngine ARK** | `ark-code-latest` | Manual only | OpenAI-compatible |
@@ -304,7 +306,23 @@ flowchart TB
 | **Qwen** (Alibaba) | `qwen-plus` | `sk-` (shared) | OpenAI-compatible |
 | **SiliconFlow** | `Qwen/Qwen2.5-7B-Instruct` | `sk-` (shared) | OpenAI-compatible |
 
-**Detection strategy:** prefer prefix uniqueness. When a prefix is ambiguous (the four `sk-` sharing providers), the wizard drops a picker for the user.
+### Local / self-hosted deployments (v1.5+)
+
+| Provider | Default port | Default endpoint | API key required |
+|---|---|---|---|
+| **Ollama** | `11434` | `http://127.0.0.1:11434/v1/chat/completions` | ✗ optional |
+| **LM Studio** | `1234` | `http://127.0.0.1:1234/v1/chat/completions` | ✗ optional |
+| **vLLM / TGI / llama.cpp server** | `8000` | `http://127.0.0.1:8000/v1/chat/completions` | ✗ optional |
+| **Custom OpenAI-compatible endpoint** | user-defined | `http://127.0.0.1:8000/v1/chat/completions` | ✗ optional |
+
+**Typical local-deployment recipes:**
+
+- **Ollama**: `ollama pull llama3.2` → `ollama serve` → in Crew pick Ollama, set model to `llama3.2`.
+- **LM Studio**: download a model in the GUI → Server tab → Start Server → pick LM Studio, use the identifier shown in the panel.
+- **vLLM**: `python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen2.5-7B-Instruct` → pick vLLM.
+- **Corporate LLM gateway**: pick "Custom OpenAI-compatible endpoint" and drop in your own URL + model name.
+
+**Detection strategy:** prefer prefix uniqueness. When a prefix is ambiguous (the four `sk-` sharing providers), the wizard drops a picker for the user. Local deployments bypass key detection entirely.
 
 **Adding your own provider:** append one entry to the `PROVIDERS` dict in `providers.py` — five lines.
 
@@ -313,6 +331,8 @@ flowchart TB
 ## 🤖 Supported Local Agent CLIs
 
 Crew is **not tied to any single executor**. On startup, `agents_cli.py` probes the system PATH (and a few well-known install locations) for these:
+
+### Built-in
 
 | Agent | Command | Invocation | Notes |
 |---|---|---|---|
@@ -325,21 +345,60 @@ Crew is **not tied to any single executor**. On startup, `agents_cli.py` probes 
 
 ### Auto-detection
 
-At startup, `agents_cli.py` does the following for each spec in `AGENT_SPECS`:
+At startup, `agents_cli.py` does the following for each spec (`BUILTIN_SPECS` + user-defined `custom_agents` from config):
 
-1. Calls `shutil.which()` to look up the command on PATH
-2. Falls back to a few well-known "installed to a fixed spot" locations (e.g. `%APPDATA%\npm\` for npm-installed CLIs, Hermes' venv path)
-3. Returns a list of `{id, name, path, installed, homepage, install_hint}`
+1. If `command` is an absolute path, test `Path.exists()` directly
+2. Otherwise, calls `shutil.which()` to look up the command on PATH
+3. Falls back to a few well-known "installed to a fixed spot" locations (e.g. `%APPDATA%\npm\` for npm-installed CLIs, Hermes' venv path)
+4. Returns a list of `{id, name, path, installed, custom, homepage, install_hint, args_template}`
 
-**Default pick:** Hermes if installed, otherwise the first installed agent in `AGENT_SPECS` order. Once the user picks explicitly in the settings panel, the choice is persisted to `config.json` under `local_agent`.
+**Default pick:** Hermes if installed, otherwise the first installed agent in order. Once the user picks explicitly in the settings panel, the choice is persisted to `config.json` under `local_agent`.
 
 ### Manual switching
 
-Top-right settings panel → **本地执行 Agent · Local Executor** dropdown. Uninstalled agents are greyed out. Install one, restart the app, and it'll show up.
+Top-right settings panel → **本地执行 Agent · Local Executor** dropdown. Uninstalled agents are greyed out, custom agents show a `(自定义)` tag. Install or add one, restart the app, and it'll show up.
 
-### Adding a new CLI
+### Custom agents (v1.5+)
 
-Append one entry to `AGENT_SPECS` in `agents_cli.py`:
+Beyond the six built-ins, Crew lets you register **arbitrary local agents** — your in-house tools, forks of open-source projects, home-grown agents, whatever.
+
+**How to add:** ⚙ settings → Local Executor → **+ 添加 (Add)**
+
+Fill five fields:
+
+| Field | Description | Example |
+|---|---|---|
+| **ID** | Unique id (must not collide with built-in ids) | `my-agent` |
+| **Display name** | Text shown in the dropdown | `My Custom Agent` |
+| **Command** | Absolute path or PATH command name | `C:\Tools\myagent.exe` or `myagent` |
+| **Args template** | Use `{prompt}` as placeholder; without it, the prompt is auto-appended | `run --input {prompt} --yolo` |
+| **Homepage** | Optional | — |
+
+**Storage:** written to `config.json` under `custom_agents`:
+
+```json
+{
+  "custom_agents": [
+    {
+      "id": "my-agent",
+      "name": "My Custom Agent",
+      "command": "C:\\Tools\\myagent.exe",
+      "args_template": "run --input {prompt} --yolo",
+      "homepage": ""
+    }
+  ]
+}
+```
+
+**REST API** for programmatic management:
+
+- `GET  /api/custom-agents` — list all custom agents
+- `POST /api/custom-agents` — add or update (upsert by id)
+- `DELETE /api/custom-agents/<id>` — remove one
+
+### Adding a new built-in CLI
+
+Append one entry to `BUILTIN_SPECS` in `agents_cli.py`:
 
 ```python
 AgentSpec(
@@ -361,6 +420,9 @@ Restart, done.
 
 - `GET /api/local-agents` → detection results + currently selected
 - `POST /api/local-agents/select` `{"agent_id": "claude"}` → switch default executor
+- `GET  /api/custom-agents` → user-defined agents
+- `POST /api/custom-agents` → upsert one
+- `DELETE /api/custom-agents/<id>` → remove
 - `GET /api/config` also carries `local_agents` / `selected_local_agent` / `local_agent_ready`
 
 ---

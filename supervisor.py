@@ -96,14 +96,23 @@ import agents_cli
 
 
 # 兼容旧代码：保留 run_hermes 名字，但内部用当前选中的 agent
-async def run_hermes(prompt: str, on_line: Optional[Callable[[str], None]] = None, timeout: float = 300, agent_id: Optional[str] = None) -> str:
+async def run_hermes(
+    prompt: str,
+    on_line: Optional[Callable[[str], None]] = None,
+    timeout: float = 300,
+    agent_id: Optional[str] = None,
+    custom_agents: Optional[list[dict]] = None,
+) -> str:
     """执行本地 agent CLI（默认用配置里选定的、若未选则用自动探测的默认值）。
 
     保留 run_hermes 名字是为了兼容旧调用点；内部会转发到 agents_cli.run_agent。
+    custom_agents 从 config.json 的 custom_agents 数组传入，用于探测自定义 agent。
     """
     if agent_id is None:
-        agent_id = agents_cli.get_default() or "hermes"
-    return await agents_cli.run_agent(agent_id, prompt, on_line=on_line, timeout=timeout)
+        agent_id = agents_cli.get_default(custom_agents) or "hermes"
+    return await agents_cli.run_agent(
+        agent_id, prompt, on_line=on_line, timeout=timeout, custom_agents=custom_agents,
+    )
 
 
 # ── 解析总管输出 ─────────────────────────────────

@@ -1479,17 +1479,31 @@ async function openSettings() {
   const keySet = cfgR.llm_key_set;
   const localAgents = laR.agents || [];
   const selectedAgent = laR.selected;
+  const currentEndpoint = cfgR.llm && cfgR.llm.endpoint;
 
   const optHtml = providers.map(p =>
-    `<option value="${p.id}" data-default="${p.default_model}"${p.id === currentPid ? ' selected' : ''}>${p.name}</option>`
+    `<option value="${p.id}" data-default="${p.default_model}" data-endpoint="${p.default_endpoint || ''}" data-local="${p.local ? '1' : '0'}" data-key-optional="${p.key_optional ? '1' : '0'}" data-hint="${(p.hint || '').replace(/"/g, '&quot;')}"${p.id === currentPid ? ' selected' : ''}>${p.name}</option>`
   ).join('');
+
+  const currentProvider = providers.find(p => p.id === currentPid) || {};
+  const isLocalProvider = !!currentProvider.local;
 
   body.innerHTML = `
     <div class="ob-item">
       <span class="ob-check">◈</span>
       <div style="flex:1">
         <div class="ob-title">Provider（哪家 LLM）</div>
+        <div class="ob-desc">选云端 API 或本地部署（Ollama / LM Studio / vLLM / 自建 endpoint）</div>
         <select id="set-provider" style="width:100%;margin-top:6px">${optHtml}</select>
+        <div id="set-provider-hint" class="ob-desc" style="margin-top:6px;min-height:1.2em">${currentProvider.hint || ''}</div>
+      </div>
+    </div>
+    <div class="ob-item">
+      <span class="ob-check">◈</span>
+      <div style="flex:1">
+        <div class="ob-title">Endpoint（接口地址）</div>
+        <div class="ob-desc">留空 = 用 provider 默认。本地部署改这里指到你自己的端口</div>
+        <input type="text" id="set-endpoint" style="width:100%;margin-top:6px;font-family:monospace;font-size:12px" value="${currentEndpoint || ''}" placeholder="${currentProvider.default_endpoint || '留空 = 用默认'}">
       </div>
     </div>
     <div class="ob-item">
@@ -1501,11 +1515,11 @@ async function openSettings() {
       </div>
     </div>
     <div class="ob-item">
-      <span class="ob-check">${keySet ? '✓' : '!'}</span>
+      <span class="ob-check">${keySet ? '✓' : (isLocalProvider ? '◈' : '!')}</span>
       <div style="flex:1">
         <div class="ob-title">API Key</div>
-        <div class="ob-desc">${keySet ? '当前已配置。留空 = 不改' : '还没配置，粘一个进去'}</div>
-        <input type="password" id="set-api-key" style="width:100%;margin-top:6px" placeholder="${keySet ? '留空 = 不改 key' : '粘贴 key，自动识别 provider'}">
+        <div id="set-key-desc" class="ob-desc">${keySet ? '当前已配置。留空 = 不改' : (isLocalProvider ? '本地部署通常不需要 key，可留空' : '还没配置，粘一个进去')}</div>
+        <input type="password" id="set-api-key" style="width:100%;margin-top:6px" placeholder="${keySet ? '留空 = 不改 key' : (isLocalProvider ? '本地部署可留空' : '粘贴 key，自动识别 provider')}">
         <div id="set-guess-hint" class="ob-desc" style="margin-top:6px;min-height:1.2em"></div>
       </div>
     </div>
@@ -1516,11 +1530,36 @@ async function openSettings() {
         <div class="ob-desc">Foreman 决定"要真干"时会调这个本地 CLI 来执行。系统已自动探测你装了哪些。</div>
         <select id="set-local-agent" style="width:100%;margin-top:6px">
           ${localAgents.map(a =>
-            `<option value="${a.id}"${a.id === selectedAgent ? ' selected' : ''}${!a.installed ? ' disabled' : ''}>${a.name}${a.installed ? '  ✓ 已安装' : '  · 未安装'}</option>`
+            `<option value="${a.id}"${a.id === selectedAgent ? ' selected' : ''}${!a.installed ? ' disabled' : ''}>${a.name}${a.custom ? ' (自定义)' : ''}${a.installed ? '  ✓ 已安装' : '  · 未安装'}</option>`
           ).join('')}
         </select>
         <div class="ob-desc" style="margin-top:6px">
-          未安装的 Agent 灰掉不可选。安装完重启应用会自动出现在列表里。
+          未安装的 Agent 灰掉不可选。用户自定义的 agent 显示 (自定义) 标签。
+        </div>
+        <div id="custom-agents-panel" style="margin-top:12px;border-top:1px dashed #999;padding-top:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="ob-title" style="font-size:13px">自定义 Agent · Custom Agents</div>
+            <button type="button" id="add-custom-agent-btn" style="font-size:12px;padding:4px 10px;cursor:pointer">+ 添加</button>
+          </div>
+          <div id="custom-agents-list" style="margin-top:8px"></div>
+          <div id="custom-agent-form" style="display:none;margin-top:10px;padding:10px;background:#fbf7ea;border:1px solid #999">
+            <div style="display:grid;grid-template-columns:80px 1fr;gap:6px 10px;font-size:12px;align-items:center">
+              <label>ID</label>
+              <input type="text" id="ca-id" placeholder="唯一 id，如 my-agent（不能和内置 id 撞）" style="padding:4px">
+              <label>显示名</label>
+              <input type="text" id="ca-name" placeholder="如 我的自定义 Agent" style="padding:4px">
+              <label>命令</label>
+              <input type="text" id="ca-command" placeholder="绝对路径或 PATH 命令名，如 C:\\Tools\\myagent.exe" style="padding:4px;font-family:monospace">
+              <label>参数模板</label>
+              <input type="text" id="ca-args" placeholder="用 {prompt} 占位，如 run --input {prompt} --yolo" style="padding:4px;font-family:monospace">
+              <label>官网</label>
+              <input type="text" id="ca-homepage" placeholder="可选" style="padding:4px">
+            </div>
+            <div style="margin-top:8px;display:flex;gap:6px;justify-content:flex-end">
+              <button type="button" id="ca-cancel" style="font-size:12px;padding:4px 10px">取消</button>
+              <button type="button" id="ca-save" style="font-size:12px;padding:4px 10px;background:#ffd530">保存</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1529,14 +1568,30 @@ async function openSettings() {
 
   const providerSel = document.getElementById('set-provider');
   const modelInput = document.getElementById('set-model');
+  const endpointInput = document.getElementById('set-endpoint');
+  const providerHint = document.getElementById('set-provider-hint');
+  const keyDesc = document.getElementById('set-key-desc');
   const keyInput = document.getElementById('set-api-key');
   const hint = document.getElementById('set-guess-hint');
 
-  // 切 provider 时自动填默认 model
+  // 切 provider 时：填默认 model + endpoint + 提示
   providerSel.addEventListener('change', () => {
     const opt = providerSel.options[providerSel.selectedIndex];
     modelInput.value = opt.dataset.default || '';
     modelInput.placeholder = `默认: ${opt.dataset.default || '—'}`;
+    // endpoint：清空输入，让 placeholder 显示默认（用户不填就用默认）
+    endpointInput.value = '';
+    endpointInput.placeholder = opt.dataset.endpoint || '留空 = 用默认';
+    providerHint.textContent = opt.dataset.hint || '';
+    // 更新 key 提示
+    const isLocal = opt.dataset.local === '1';
+    if (isLocal) {
+      keyDesc.textContent = '本地部署通常不需要 key，可留空';
+      keyInput.placeholder = '本地部署可留空';
+    } else {
+      keyDesc.textContent = '还没配置，粘一个进去';
+      keyInput.placeholder = '粘贴 key，自动识别 provider';
+    }
   });
 
   // 输入 key 时实时识别
@@ -1573,13 +1628,102 @@ async function openSettings() {
   const close = () => modal.style.display = 'none';
   document.getElementById('settings-cancel').onclick = close;
   document.getElementById('settings-bg').onclick = close;
+
+  // ─── 自定义 Agent CRUD ────────────────────
+  const customList = document.getElementById('custom-agents-list');
+  const customForm = document.getElementById('custom-agent-form');
+  const localAgentSel = document.getElementById('set-local-agent');
+
+  function renderCustomList() {
+    // 从最新的 laR 里筛出自定义 agent
+    fetch('/api/local-agents').then(r => r.json()).then(la => {
+      const customs = (la.agents || []).filter(a => a.custom);
+      if (customs.length === 0) {
+        customList.innerHTML = '<div class="ob-desc" style="font-style:italic">还没有自定义 agent。点右上"+ 添加"来创建。</div>';
+        return;
+      }
+      customList.innerHTML = customs.map(a => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#fff9e8;margin-bottom:4px;border:1px solid #ccc;font-size:12px">
+          <div style="flex:1">
+            <b>${a.name}</b> <span style="color:#666">(id: ${a.id})</span>
+            <div style="font-family:monospace;color:#666;font-size:11px;margin-top:2px">${a.command} ${a.args_template}</div>
+            <div style="font-size:11px;color:${a.installed ? '#2a7d2a' : '#c33'}">${a.installed ? '✓ 探测到：' + a.path : '✗ 未找到'}</div>
+          </div>
+          <button type="button" data-del="${a.id}" style="font-size:11px;padding:2px 8px;cursor:pointer;color:#c33">删除</button>
+        </div>
+      `).join('');
+      customList.querySelectorAll('[data-del]').forEach(btn => {
+        btn.onclick = async () => {
+          const id = btn.dataset.del;
+          if (!confirm(`删除自定义 agent "${id}"？`)) return;
+          await fetch('/api/custom-agents/' + encodeURIComponent(id), {method: 'DELETE'});
+          // 刷 UI + 刷本地 agent 下拉
+          renderCustomList();
+          await refreshLocalAgentDropdown();
+        };
+      });
+    });
+  }
+
+  async function refreshLocalAgentDropdown() {
+    const la = await fetch('/api/local-agents').then(r => r.json());
+    const selectedNow = la.selected;
+    localAgentSel.innerHTML = (la.agents || []).map(a =>
+      `<option value="${a.id}"${a.id === selectedNow ? ' selected' : ''}${!a.installed ? ' disabled' : ''}>${a.name}${a.custom ? ' (自定义)' : ''}${a.installed ? '  ✓ 已安装' : '  · 未安装'}</option>`
+    ).join('');
+  }
+
+  document.getElementById('add-custom-agent-btn').onclick = () => {
+    customForm.style.display = 'block';
+    document.getElementById('ca-id').value = '';
+    document.getElementById('ca-name').value = '';
+    document.getElementById('ca-command').value = '';
+    document.getElementById('ca-args').value = '';
+    document.getElementById('ca-homepage').value = '';
+  };
+  document.getElementById('ca-cancel').onclick = () => customForm.style.display = 'none';
+  document.getElementById('ca-save').onclick = async () => {
+    const payload = {
+      id: document.getElementById('ca-id').value.trim(),
+      name: document.getElementById('ca-name').value.trim(),
+      command: document.getElementById('ca-command').value.trim(),
+      args_template: document.getElementById('ca-args').value.trim(),
+      homepage: document.getElementById('ca-homepage').value.trim(),
+    };
+    if (!payload.id || !payload.name || !payload.command) {
+      alert('id / 显示名 / 命令 都是必填');
+      return;
+    }
+    const r = await fetch('/api/custom-agents', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: '未知错误'}));
+      alert('保存失败：' + (err.detail || r.statusText));
+      return;
+    }
+    const result = await r.json();
+    const det = result.detected;
+    if (det && !det.installed) {
+      alert(`保存了，但探测不到该命令。检查路径是否正确：\n${det.command}`);
+    }
+    customForm.style.display = 'none';
+    renderCustomList();
+    await refreshLocalAgentDropdown();
+  };
+  renderCustomList();
+
+  // ─── 保存所有设置 ────────────────────
   document.getElementById('settings-save').onclick = async () => {
     const payload = {
       provider: providerSel.value,
       model: modelInput.value.trim(),
+      endpoint: endpointInput.value.trim(),  // 可留空 → 用 provider 默认
     };
     if (keyInput.value.trim()) payload.api_key = keyInput.value.trim();
-    // 保存 LLM / provider / key
+    // 保存 LLM / provider / endpoint / key
     await fetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},

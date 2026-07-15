@@ -188,9 +188,11 @@ async def call_llm(messages: list[dict], max_tokens: int = 400, temperature: flo
     pid, key, endpoint, model = _get_current_llm()
     p = _providers.get_provider(pid) or {}
     protocol = p.get("protocol", "openai")
+    key_optional = p.get("key_optional", False)
 
     def _sync() -> str:
-        if not key:
+        # key 允许空的 provider（本地部署）不要求 key
+        if not key and not key_optional:
             return "[未配置 API key。点右上『?』或首次向导里填一个。]"
         try:
             if protocol == "anthropic":
@@ -225,21 +227,26 @@ async def call_llm(messages: list[dict], max_tokens: int = 400, temperature: flo
                     data = json.loads(r.read().decode("utf-8"))
                     return data["content"][0]["text"].strip()
             else:
-                # OpenAI 兼容格式（大部分 provider）
+                # OpenAI 兼容格式（大部分 provider + 本地 Ollama/LM Studio/vLLM）
                 body = json.dumps(
                     {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
                     ensure_ascii=False,
                 ).encode("utf-8")
-                req = urllib.request.Request(
-                    endpoint,
-                    data=body,
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                )
+                headers = {"Content-Type": "application/json"}
+                # 有 key 就带上；本地部署可以没 key
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
+                req = urllib.request.Request(endpoint, data=body, headers=headers)
                 with urllib.request.urlopen(req, timeout=60) as r:
                     data = json.loads(r.read().decode("utf-8"))
                     return data["choices"][0]["message"]["content"].strip()
         except urllib.error.HTTPError as e:
             return f"[{pid} {e.code}: {e.read().decode('utf-8', 'ignore')[:180]}]"
+        except urllib.error.URLError as e:
+            # 本地 endpoint 连不上时给个更友好的提示
+            if p.get("local"):
+                return f"[连不上 {pid} ({endpoint})。检查本地服务是否启动：{e.reason}]"
+            return f"[{pid} 连接失败: {e.reason}]"
         except Exception as e:
             return f"[{pid} 调用出错: {e}]"
 
@@ -641,8 +648,9 @@ async def supervisor_reply(user_text: str) -> None:
                 f"▶ {level_txt}档位下这条不算敏感 · Foreman 直接推给本地 Agent 执行", kind="notice")
 
         # 真的推给本地 agent
-        selected_agent_id = CONFIG.get("local_agent") or sv.agents_cli.get_default() or "hermes"
-        spec = sv.agents_cli.get_spec(selected_agent_id)
+        custom_agents_cfg = CONFIG.get("custom_agents", [])
+        selected_agent_id = CONFIG.get("local_agent") or sv.agents_cli.get_default(custom_agents_cfg) or "hermes"
+        spec = sv.agents_cli.get_spec(selected_agent_id, custom_agents_cfg)
         agent_display = spec.name if spec else selected_agent_id
         await room.push_message("system", "系统", f"▶ {agent_display} 执行中：{task}", kind="notice")
         # 用 room.broadcast 流式喂回执行日志（简化：只把最终 stdout 一次性推）
@@ -656,7 +664,10 @@ async def supervisor_reply(user_text: str) -> None:
                 room.push_message("system", agent_display, line[:500], kind="tool"),
                 loop,
             )
-        result = await sv.run_hermes(task, on_line=_on_line, timeout=300, agent_id=selected_agent_id)
+        result = await sv.run_hermes(
+            task, on_line=_on_line, timeout=300,
+            agent_id=selected_agent_id, custom_agents=custom_agents_cfg,
+        )
         # 收尾
         tail = result.strip().splitlines()[-1] if result.strip() else "(无输出)"
         await room.push_message("system", "系统", f"✅ 执行完成，最后一行：{tail[:200]}", kind="notice")
@@ -728,10 +739,13 @@ async def delete_topic(topic_id: int) -> dict:
 async def get_config() -> dict:
     """给前端读：当前权限档位、是否已完成首次安装引导、本地 agent 探测、LLM 配置。"""
     # 探测本地 Agent CLI
-    local_agents = sv.agents_cli.detect_installed()
-    selected_agent = CONFIG.get("local_agent") or sv.agents_cli.get_default()
+    local_agents = sv.agents_cli.detect_installed(CONFIG.get("custom_agents", []))
+    selected_agent = CONFIG.get("local_agent") or sv.agents_cli.get_default(CONFIG.get("custom_agents", []))
     hermes_ready = any(a["installed"] for a in local_agents)  # 只要有任一本地 agent 装了就 ready
     pid, key, endpoint, model = _get_current_llm()
+    p_cfg = _providers.get_provider(pid) or {}
+    # LLM 已就绪的判定：有 key，或 provider 是本地部署（key 可选）
+    llm_ready = bool(key) or p_cfg.get("key_optional", False)
     return {
         "permission_level": CONFIG.get("permission_level", "balanced"),
         "onboarded": CONFIG.get("onboarded", False),
@@ -739,8 +753,9 @@ async def get_config() -> dict:
         "local_agent_ready": hermes_ready,
         "local_agents": local_agents,
         "selected_local_agent": selected_agent,
-        "ark_key_set": bool(key),  # 兼容旧字段名
-        "llm_key_set": bool(key),
+        "custom_agents": CONFIG.get("custom_agents", []),
+        "ark_key_set": llm_ready,  # 兼容旧字段名
+        "llm_key_set": llm_ready,
         "llm": {
             "provider": pid,
             "provider_name": (_providers.get_provider(pid) or {}).get("name", pid),
@@ -758,9 +773,10 @@ async def get_config() -> dict:
 
 @app.get("/api/local-agents")
 async def get_local_agents() -> dict:
-    """探测本地已装的 Agent CLI（Hermes / Claude Code / Codex / OpenCode / Aider / Gemini）。"""
-    agents = sv.agents_cli.detect_installed()
-    selected = CONFIG.get("local_agent") or sv.agents_cli.get_default()
+    """探测本地已装的 Agent CLI + 用户自定义 agent。"""
+    custom_agents = CONFIG.get("custom_agents", [])
+    agents = sv.agents_cli.detect_installed(custom_agents)
+    selected = CONFIG.get("local_agent") or sv.agents_cli.get_default(custom_agents)
     return {"agents": agents, "selected": selected}
 
 
@@ -768,17 +784,77 @@ async def get_local_agents() -> dict:
 async def select_local_agent(payload: dict) -> dict:
     """让用户手动切换默认本地 Agent。"""
     agent_id = payload.get("agent_id", "").strip()
-    valid_ids = {a.id for a in sv.agents_cli.AGENT_SPECS}
+    custom_agents = CONFIG.get("custom_agents", [])
+    all_agents = sv.agents_cli.detect_installed(custom_agents)
+    valid_ids = {a["id"] for a in all_agents}
     if agent_id not in valid_ids:
         raise HTTPException(400, f"unknown agent_id: {agent_id}")
-    # 确保它装了才允许切
-    spec_installed = {a["id"]: a["installed"] for a in sv.agents_cli.detect_installed()}
-    if not spec_installed.get(agent_id):
+    installed_map = {a["id"]: a["installed"] for a in all_agents}
+    if not installed_map.get(agent_id):
         raise HTTPException(400, f"{agent_id} 尚未安装到本机")
     CONFIG["local_agent"] = agent_id
     save_config(CONFIG)
     await room.broadcast({"type": "config_updated", "config": CONFIG})
     return {"ok": True, "selected": agent_id}
+
+
+# ─── 用户自定义 Agent CRUD ─────────────────────────
+@app.get("/api/custom-agents")
+async def list_custom_agents() -> dict:
+    """列出用户自定义的所有 agent。"""
+    return {"custom_agents": CONFIG.get("custom_agents", [])}
+
+
+@app.post("/api/custom-agents")
+async def add_custom_agent(payload: dict) -> dict:
+    """新增或更新一个自定义 agent。
+
+    body: {id, name, command, args_template, homepage?}
+    id 必填 + 全局唯一（含内置）。command 必须是绝对路径或 PATH 上的命令名。
+    args_template 可含 {prompt} 占位；不含则 prompt 自动拼末尾。
+    """
+    cid = str(payload.get("id", "")).strip()
+    name = str(payload.get("name", "")).strip()
+    command = str(payload.get("command", "")).strip()
+    args_template = str(payload.get("args_template", "")).strip()
+    homepage = str(payload.get("homepage", "")).strip()
+
+    if not cid or not name or not command:
+        raise HTTPException(400, "id / name / command 都是必填")
+    # id 不能撞内置
+    builtin_ids = {s.id for s in sv.agents_cli.BUILTIN_SPECS}
+    if cid in builtin_ids:
+        raise HTTPException(400, f"id={cid} 与内置 agent 冲突，请换一个")
+
+    # upsert
+    entry = {"id": cid, "name": name, "command": command,
+             "args_template": args_template, "homepage": homepage}
+    lst = list(CONFIG.get("custom_agents", []))
+    for i, item in enumerate(lst):
+        if item.get("id") == cid:
+            lst[i] = entry
+            break
+    else:
+        lst.append(entry)
+    CONFIG["custom_agents"] = lst
+    save_config(CONFIG)
+    # 报告探测结果
+    detected = next((a for a in sv.agents_cli.detect_installed(lst) if a["id"] == cid), None)
+    await room.broadcast({"type": "config_updated", "config": CONFIG})
+    return {"ok": True, "agent": entry, "detected": detected}
+
+
+@app.delete("/api/custom-agents/{agent_id}")
+async def delete_custom_agent(agent_id: str) -> dict:
+    """删除一个自定义 agent。"""
+    lst = [a for a in CONFIG.get("custom_agents", []) if a.get("id") != agent_id]
+    CONFIG["custom_agents"] = lst
+    # 如果当前选中的正是被删的，回退到默认
+    if CONFIG.get("local_agent") == agent_id:
+        CONFIG["local_agent"] = sv.agents_cli.get_default(lst)
+    save_config(CONFIG)
+    await room.broadcast({"type": "config_updated", "config": CONFIG})
+    return {"ok": True}
 
 
 @app.get("/api/providers")
@@ -817,10 +893,20 @@ async def set_config(payload: dict) -> dict:
         pid = payload["provider"]
         if _providers.get_provider(pid):
             CONFIG["provider"] = pid
-    if "model" in payload and payload["model"]:
-        CONFIG["model"] = payload["model"].strip()
-    if "endpoint" in payload and payload["endpoint"]:
-        CONFIG["endpoint"] = payload["endpoint"].strip()
+    if "model" in payload:
+        val = payload["model"].strip()
+        if val:
+            CONFIG["model"] = val
+        else:
+            # 空字符串 = 清除，回退到 provider 默认
+            CONFIG.pop("model", None)
+    if "endpoint" in payload:
+        val = payload["endpoint"].strip()
+        if val:
+            CONFIG["endpoint"] = val
+        else:
+            # 空字符串 = 清除，回退到 provider 默认
+            CONFIG.pop("endpoint", None)
     # 兼容：ark_api_key 或新的 api_key 都接受
     new_key = payload.get("api_key") or payload.get("ark_api_key")
     if new_key:

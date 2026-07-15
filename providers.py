@@ -99,6 +99,53 @@ PROVIDERS: dict[str, dict] = {
         "uniquely_identified": False,
         "protocol": "openai",
     },
+    # ─── 本地/私有部署 ───
+    # 这些走 OpenAI 兼容协议，endpoint 用户可以在设置里改
+    # key 允许留空（多数本地部署不校验）
+    "ollama": {
+        "name": "Ollama (本地)",
+        "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+        "default_model": "llama3.2",
+        "key_hint": None,
+        "uniquely_identified": False,
+        "protocol": "openai",
+        "local": True,
+        "key_optional": True,
+        "hint": "Ollama 默认端口 11434。model 填 `ollama list` 里看到的模型名。",
+    },
+    "lmstudio": {
+        "name": "LM Studio (本地)",
+        "endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+        "default_model": "local-model",
+        "key_hint": None,
+        "uniquely_identified": False,
+        "protocol": "openai",
+        "local": True,
+        "key_optional": True,
+        "hint": "LM Studio 默认端口 1234。启动 LM Studio 后开 Server → Start Server。",
+    },
+    "vllm": {
+        "name": "vLLM / TGI / llama.cpp server",
+        "endpoint": "http://127.0.0.1:8000/v1/chat/completions",
+        "default_model": "your-model",
+        "key_hint": None,
+        "uniquely_identified": False,
+        "protocol": "openai",
+        "local": True,
+        "key_optional": True,
+        "hint": "vLLM 默认端口 8000；llama.cpp server 默认 8080；TGI 默认 8080。都是 OpenAI 兼容格式。",
+    },
+    "custom_openai": {
+        "name": "自定义 OpenAI 兼容 endpoint",
+        "endpoint": "http://127.0.0.1:8000/v1/chat/completions",
+        "default_model": "your-model",
+        "key_hint": None,
+        "uniquely_identified": False,
+        "protocol": "openai",
+        "local": True,
+        "key_optional": True,
+        "hint": "任意 OpenAI 兼容 endpoint —— 自建 gateway、公司内部 LLM 网关、其他厂商 API 均可。",
+    },
 }
 
 
@@ -140,6 +187,10 @@ def list_providers() -> list[dict]:
             "id": pid,
             "name": cfg["name"],
             "default_model": cfg["default_model"],
+            "default_endpoint": cfg["endpoint"],
+            "local": cfg.get("local", False),
+            "key_optional": cfg.get("key_optional", False),
+            "hint": cfg.get("hint", ""),
         }
         for pid, cfg in PROVIDERS.items()
     ]

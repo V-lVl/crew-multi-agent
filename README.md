@@ -288,6 +288,8 @@ flowchart TB
 
 ## 🔌 支持的 LLM Provider
 
+### 云端 API（10 家）
+
 | Provider | 默认模型 | API 前缀识别 | 协议 |
 |---|---|---|---|
 | **火山方舟** (VolcEngine ARK) | `ark-code-latest` | 手选 | OpenAI 兼容 |
@@ -301,7 +303,23 @@ flowchart TB
 | **通义千问** (阿里) | `qwen-plus` | `sk-` (共用) | OpenAI 兼容 |
 | **SiliconFlow** (硅基流动) | `Qwen/Qwen2.5-7B-Instruct` | `sk-` (共用) | OpenAI 兼容 |
 
-**识别策略**：优先看 key 前缀能否唯一定位；共用 `sk-` 前缀的四家（OpenAI/DeepSeek/Kimi/通义）识别不了时，向导会弹下拉让用户手动选择。
+### 本地/私有部署（v1.5+）
+
+| Provider | 默认端口 | 默认 endpoint | Key 是否必需 |
+|---|---|---|---|
+| **Ollama** | `11434` | `http://127.0.0.1:11434/v1/chat/completions` | ✗ 可选 |
+| **LM Studio** | `1234` | `http://127.0.0.1:1234/v1/chat/completions` | ✗ 可选 |
+| **vLLM / TGI / llama.cpp server** | `8000` | `http://127.0.0.1:8000/v1/chat/completions` | ✗ 可选 |
+| **自定义 OpenAI 兼容 endpoint** | 用户填 | `http://127.0.0.1:8000/v1/chat/completions` | ✗ 可选 |
+
+**本地部署常见玩法：**
+
+- **Ollama**：`ollama pull llama3.2` → `ollama serve` → Crew 里选 Ollama、model 填 `llama3.2` 即用
+- **LM Studio**：GUI 下载模型 → Server 页 → Start Server → 选 LM Studio → model 用它面板上显示的 identifier
+- **vLLM**：`python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen2.5-7B-Instruct` → 选 vLLM 即用
+- **公司内部 LLM 网关**：选自定义 OpenAI 兼容 endpoint，填自己的 URL 和 model 名
+
+**识别策略**：优先看 key 前缀能否唯一定位；共用 `sk-` 前缀的四家（OpenAI/DeepSeek/Kimi/通义）识别不了时，向导会弹下拉让用户手动选择。本地部署不看 key 前缀。
 
 **加自己的 provider**：编辑 `providers.py` 中的 `PROVIDERS` 字典即可，5 行代码搞定。
 
@@ -310,6 +328,8 @@ flowchart TB
 ## 🤖 支持的本地 Agent CLI
 
 Crew **不绑定单一执行器**——Foreman 可以调用系统里任意一款已装的本地 coding agent。启动时自动探测，用户可在设置面板里切换。
+
+### 内置支持
 
 | Agent | 命令 | 调用格式 | 说明 |
 |---|---|---|---|
@@ -324,17 +344,56 @@ Crew **不绑定单一执行器**——Foreman 可以调用系统里任意一款
 
 启动时 `agents_cli.py` 会：
 
-1. 遍历 `AGENT_SPECS` 列表，对每一项调 `shutil.which()` 查系统 PATH
-2. 兜底看几个常见"绿色安装"路径（如 `%APPDATA%\npm\` 下的 `.cmd` 快捷方式、Hermes 的 venv 位置）
-3. 返回一个 `[{id, name, path, installed, homepage, install_hint}]` 列表
+1. 遍历 `BUILTIN_SPECS` 列表 + 用户在 UI 里配置的 `custom_agents`
+2. 对每一项调 `shutil.which()` 查系统 PATH；命令是绝对路径的直接测 `exists()`
+3. 兜底看几个常见"绿色安装"路径（如 `%APPDATA%\npm\` 下的 `.cmd` 快捷方式、Hermes 的 venv 位置）
+4. 返回一个 `[{id, name, path, installed, custom, homepage, install_hint, args_template}]` 列表
 
-**优先级**：默认选 Hermes；Hermes 没装就按 `AGENT_SPECS` 顺序找第一个装了的。用户在设置面板选过一次后，会记到 `config.json` 的 `local_agent` 字段。
+**优先级**：默认选 Hermes；Hermes 没装就按顺序找第一个装了的。用户在设置面板选过一次后，会记到 `config.json` 的 `local_agent` 字段。
 
 ### 手动切换
 
-主界面右上角设置面板 → **本地执行 Agent · Local Executor** 下拉。未安装的项灰掉不可选，安装完重启应用会自动出现在列表里。
+主界面右上角设置面板 → **本地执行 Agent · Local Executor** 下拉。未安装的项灰掉不可选，自定义的显示 `(自定义)` 标签，安装/添加完重启应用会自动出现在列表里。
 
-### 加一个新 CLI
+### 自定义 Agent（v1.5+）
+
+除了内置 6 家，Crew 允许用户添加**任意本地 agent**——自建 agent、公司内部工具、开源项目 fork 都行。
+
+**添加方式**：⚙ 设置面板 → 本地执行 Agent → **+ 添加**
+
+填 5 个字段：
+
+| 字段 | 说明 | 例子 |
+|---|---|---|
+| **ID** | 唯一标识（不能撞内置 id） | `my-agent` |
+| **显示名** | 下拉里的显示文本 | `My Custom Agent` |
+| **命令** | 绝对路径或 PATH 命令名 | `C:\Tools\myagent.exe` 或 `myagent` |
+| **参数模板** | 用 `{prompt}` 占位；不含则 prompt 自动追加末尾 | `run --input {prompt} --yolo` |
+| **官网** | 可选 | — |
+
+**存储**：写到 `config.json` 的 `custom_agents` 数组：
+
+```json
+{
+  "custom_agents": [
+    {
+      "id": "my-agent",
+      "name": "My Custom Agent",
+      "command": "C:\\Tools\\myagent.exe",
+      "args_template": "run --input {prompt} --yolo",
+      "homepage": ""
+    }
+  ]
+}
+```
+
+**API 接口**：也可直接用 REST 管理
+
+- `GET  /api/custom-agents` — 列出所有自定义 agent
+- `POST /api/custom-agents` — 新增或更新一个（upsert by id）
+- `DELETE /api/custom-agents/<id>` — 删除一个
+
+### 加一个内置 CLI
 
 编辑 `agents_cli.py` 的 `AGENT_SPECS` 列表，追加一条 `AgentSpec`：
 
