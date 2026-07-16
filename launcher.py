@@ -255,12 +255,36 @@ def main() -> None:
     except Exception as e:
         _log(f"pywebview 失败: {e}，退回浏览器")
         try:
-            import webbrowser
-            webbrowser.open(URL)
+            # webbrowser.open 有时静默失败；用 cmd start 更可靠
+            opened = False
+            try:
+                import webbrowser
+                opened = webbrowser.open(URL)
+            except Exception as be:
+                _log(f"webbrowser.open 失败: {be}")
+            if not opened:
+                try:
+                    import subprocess
+                    subprocess.Popen(["cmd", "/c", "start", "", URL], shell=False)
+                    opened = True
+                    _log("用 cmd start 打开浏览器")
+                except Exception as se:
+                    _log(f"cmd start 也失败: {se}")
+            if not opened:
+                # 最后一招：os.startfile 直接开 URL
+                try:
+                    import os as _os
+                    _os.startfile(URL)  # type: ignore
+                    opened = True
+                    _log("用 os.startfile 打开浏览器")
+                except Exception as oe:
+                    _log(f"os.startfile 也失败: {oe}")
+
             import ctypes
+            hint = f"已用浏览器打开 {URL}" if opened else f"请手动在浏览器打开：\n{URL}"
             ctypes.windll.user32.MessageBoxW(
                 0,
-                f"Crew 桌面窗口启动失败：{e}\n已用浏览器打开 {URL}",
+                f"Crew 桌面窗口启动失败（缺 .NET Runtime）\n{hint}",
                 "Crew · 窗口降级",
                 0x30,  # MB_ICONWARNING
             )

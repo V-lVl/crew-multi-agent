@@ -2798,3 +2798,26 @@ async function openRoster() {
     const r = await fetch('/api/agents/custom', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      msg.style.color = '#c33';
+      msg.textContent = '✗ ' + (j.detail || r.statusText);
+      return;
+    }
+    msg.style.color = '#2a7d2a';
+    msg.textContent = `✓ 保存成功：${payload.name}（${payload.role}）${editingName ? ' [已更新]' : ' [新增]'}`;
+    setTimeout(() => openRoster(), 600);  // 刷新面板
+  };
+
+  modal.style.display = 'flex';
+}
+document.getElementById('roster-btn').onclick = openRoster;
+document.getElementById('roster-close').onclick = () => document.getElementById('roster-modal').style.display = 'none';
+document.getElementById('roster-bg').onclick = () => document.getElementById('roster-modal').style.display = 'none';
+
+</script>
+</body>
+</html>
+
