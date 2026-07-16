@@ -207,6 +207,44 @@ def run_uvicorn() -> None:
             pass
 
 
+def _open_in_browser() -> None:
+    """打开系统浏览器指向 URL；有三级兜底，任何一步成功即可。之后主线程 hang 住让 daemon 存活。"""
+    opened = False
+    try:
+        import webbrowser
+        opened = webbrowser.open(URL)
+    except Exception as be:
+        _log(f"webbrowser.open 失败: {be}")
+    if not opened:
+        try:
+            import subprocess
+            subprocess.Popen(["cmd", "/c", "start", "", URL], shell=False)
+            opened = True
+            _log("cmd start 打开浏览器")
+        except Exception as se:
+            _log(f"cmd start 失败: {se}")
+    if not opened:
+        try:
+            os.startfile(URL)  # type: ignore
+            opened = True
+            _log("os.startfile 打开浏览器")
+        except Exception as oe:
+            _log(f"os.startfile 失败: {oe}")
+
+    if not opened:
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0, f"Crew 已在后台运行\n请手动打开：{URL}", "Crew", 0x40
+            )
+        except Exception:
+            pass
+
+    # daemon 存活
+    while True:
+        time.sleep(3600)
+
+
 def main() -> None:
     # 1. 准备数据目录 + 重定向流
     data_dir = get_data_dir()
@@ -238,7 +276,20 @@ def main() -> None:
     time.sleep(0.5)
     _log("server ready, opening desktop window...")
 
-    # 4. 主线程开原生窗口
+    # 4. 主线程开原生窗口（可选，缺 .NET runtime 时降级浏览器）
+    # v3.0.2 起：优先浏览器打开，避免 pywebview + pythonnet 的复杂依赖
+    # 如果用户要原生窗口体验，装 WebView2 Runtime + .NET Desktop Runtime 8+，
+    # 并把 CREW_USE_WEBVIEW=1 加到环境变量即可
+    use_webview = os.environ.get("CREW_USE_WEBVIEW", "0") == "1"
+    if not use_webview:
+        _log("直接用浏览器打开（默认策略）")
+        _open_in_browser()
+        return
+
+    os.environ.setdefault("PYTHONNET_RUNTIME", "coreclr")
+    dotnet_root = r"C:\Program Files\dotnet"
+    if os.path.isdir(dotnet_root):
+        os.environ.setdefault("DOTNET_ROOT", dotnet_root)
     try:
         import webview
         webview.create_window(

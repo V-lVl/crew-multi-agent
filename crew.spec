@@ -67,7 +67,7 @@ for _mod in ("webview", "clr_loader", "pythonnet"):
     hiddenimports += _h
 
 # pydantic v2 的 C 扩展必须显式收集（否则 ModuleNotFoundError: pydantic_core._pydantic_core）
-for pkg in ("pydantic", "pydantic_core"):
+for pkg in ("pydantic", "pydantic_core", "cffi", "pythonnet", "clr_loader"):
     _d, _b, _h = collect_all(pkg)
     datas += _d
     binaries += _b

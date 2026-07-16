@@ -74,6 +74,8 @@ class MCPServerEntry:
             "description": self.description,
             "status": self.status,
             "last_error": self.last_error,
+            "tools": [{"name": t.get("name",""), "description": t.get("description","")}
+                      for t in (self.tools or [])],
             "tools_count": len(self.tools),
         }
 
