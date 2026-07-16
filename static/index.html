@@ -555,6 +555,13 @@
     flex-basis: 0 !important;
   }
 
+  /* 流式生成时的呼吸点 */
+  @keyframes streamPulse {
+    0%,100% { opacity: .3; transform: scale(.85); }
+    50%     { opacity: 1;  transform: scale(1.15); }
+  }
+  .msg.streaming .content { white-space: pre-wrap; }
+
   #messages {
     flex: 1;
     overflow-y: auto;
@@ -1341,9 +1348,18 @@ function connectWs() {
       messagesEl.innerHTML = ''; typingsEl.innerHTML = '';
       typingMap.clear(); LAST_AUTHOR = null;
       renderAgents(); updateHeader(); refreshTopics();
+      if (CHANNEL === 'supervisor' && typeof maybeShowForemanHint === 'function') {
+        maybeShowForemanHint();
+      }
     } else if (m.type === 'message') {
       renderMessage(m);
       if (m.role === 'agent') refreshTopics();
+    } else if (m.type === 'msg_start') {
+      startStreamingMessage(m);
+    } else if (m.type === 'msg_delta') {
+      appendStreamingDelta(m);
+    } else if (m.type === 'msg_end') {
+      finalizeStreamingMessage(m);
     } else if (m.type === 'typing') {
       renderTyping(m);
     } else if (m.type === 'tool_call') {
@@ -1410,7 +1426,8 @@ function maybeShowOnboarding() {
         <p style="margin:8px 0"><strong>5. 用量与费用</strong>：右上 <code>💰</code> —— 今日 token 消耗、7 天趋势、按 agent 拆分、MCP tool 调用统计都在里面。</p>
         <p style="margin:8px 0"><strong>6. 其他按钮</strong>：<code>◐</code> 深浅主题 · <code>📂</code> 切 workspace · <code>👤</code> 改我的名字 · <code>👥</code> Marketplace</p>
       </div>
-      <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end">
+      <div style="margin-top:20px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+        <button class="btn mini" id="onboard-hello" style="font-size:12px" title="填一条示例消息到输入框，按 SEND 就能看到实时回复">👋 试发一条 hello</button>
         <button class="btn mini" id="onboard-mcp" style="font-size:12px">先看看 MCP 有啥工具</button>
         <button class="btn primary" id="onboard-close" style="font-size:13px">开始使用 ↵</button>
       </div>
@@ -1425,6 +1442,20 @@ function maybeShowOnboarding() {
     localStorage.setItem('crew-onboarded-v1', '1');
     modal.remove();
     openMCP();
+  };
+  document.getElementById('onboard-hello').onclick = () => {
+    localStorage.setItem('crew-onboarded-v1', '1');
+    modal.remove();
+    inputEl.value = '@Ash 你好，简短介绍一下自己（30 字内）';
+    inputEl.focus();
+    // 提示用户按 SEND
+    setTimeout(() => {
+      const sendBtn = document.getElementById('send');
+      if (sendBtn) {
+        sendBtn.style.animation = 'streamPulse 1s ease-in-out 3';
+        setTimeout(() => sendBtn.style.animation = '', 3500);
+      }
+    }, 200);
   };
 }
 setTimeout(maybeShowOnboarding, 400);
@@ -1563,7 +1594,64 @@ function renderMessage(m) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-// ─── MCP tool call / result 卡片 ────────────────
+// ─── 流式消息：msg_start / msg_delta / msg_end ──────────────
+const STREAMING = new Map();  // msg_id → {contentEl, buffer, div}
+
+function startStreamingMessage(m) {
+  // m: {msg_id, role, name, ts, emoji, color, title}
+  const isMe = false;
+  const authorKey = 'agent:' + m.name;
+  const sameAuthor = authorKey === LAST_AUTHOR;
+  LAST_AUTHOR = authorKey;
+
+  const div = document.createElement('div');
+  div.className = 'msg streaming' + (sameAuthor ? ' same-author' : '');
+  if (m.ts) div.dataset.ts = m.ts;
+  const color = m.color || '#dcd3bc';
+  const emoji = m.emoji || '💬';
+  const title = m.title || '';
+  const ts = formatTime(m.ts);
+  const safeEmoji = escapeHTML(String(emoji || '')).replace(/'/g, '&#39;');
+  div.innerHTML = `
+    <div class="avatar" style="background:${color}"><img src="/static/avatars/${encodeURIComponent(m.name)}.svg" onerror="this.replaceWith(document.createTextNode(this.getAttribute('data-fallback')))" data-fallback="${safeEmoji}" alt="${safeEmoji}"></div>
+    <div class="body">
+      <div class="head">
+        <span class="name">${escapeHTML(m.name)}</span>
+        ${title ? `<span class="tag">${escapeHTML(title)}</span>` : ''}
+        <span class="ts">${ts}</span>
+        <span class="stream-dot" title="正在生成…" style="margin-left:6px;display:inline-block;width:6px;height:6px;background:var(--accent);border-radius:50%;animation:streamPulse 1.2s ease-in-out infinite"></span>
+      </div>
+      <div class="content stream-content"></div>
+    </div>`;
+  messagesEl.appendChild(div);
+  const contentEl = div.querySelector('.stream-content');
+  STREAMING.set(m.msg_id, {contentEl, buffer: '', div});
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function appendStreamingDelta(m) {
+  const s = STREAMING.get(m.msg_id);
+  if (!s) return;
+  s.buffer += m.chunk || '';
+  // 用 textContent 保证不被解释成 HTML（安全）；等 finalize 时才走 renderContent（markdown）
+  s.contentEl.textContent = s.buffer;
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function finalizeStreamingMessage(m) {
+  const s = STREAMING.get(m.msg_id);
+  if (!s) return;
+  // 最终版：用完整 content 走 renderContent（支持 markdown / 代码高亮）
+  const finalText = m.content != null ? m.content : s.buffer;
+  s.contentEl.innerHTML = renderContent(finalText);
+  s.div.classList.remove('streaming');
+  const dot = s.div.querySelector('.stream-dot');
+  if (dot) dot.remove();
+  STREAMING.delete(m.msg_id);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  refreshTopics();
+}
+
 function renderToolCard(html) {
   const div = document.createElement('div');
   div.className = 'tool-card';
@@ -1661,17 +1749,56 @@ document.querySelectorAll('.ch-tab').forEach(btn => {
     btn.classList.add('active');
     CHANNEL = btn.dataset.ch;
     if (CHANNEL === 'supervisor') {
-      inputEl.placeholder = '告诉 Foreman，他会安排…';
+      inputEl.placeholder = '给 Foreman 派个任务，比如：帮我调研 3 个方案并各写 100 字优劣';
       chTitle.textContent = '☗ Foreman';
-      // 隐藏 quicks
       quicksEl.style.display = 'none';
+      maybeShowForemanHint();
     } else {
-      inputEl.placeholder = '写点什么…';
+      inputEl.placeholder = '发消息（Shift+Enter 换行 · @名字 指名回复 · /discuss 议题 全员讨论）';
       updateHeader();
       quicksEl.style.display = '';
+      const hint = document.getElementById('foreman-hint-card');
+      if (hint) hint.remove();
     }
   };
 });
+
+// Foreman 引导卡：切到该频道且聊天区为空时显示
+function maybeShowForemanHint() {
+  if (document.getElementById('foreman-hint-card')) return;
+  const hasMsgs = messagesEl.querySelectorAll('.msg').length > 0;
+  if (hasMsgs) return;
+
+  const card = document.createElement('div');
+  card.id = 'foreman-hint-card';
+  card.style.cssText = 'margin:16px auto;max-width:600px;padding:14px 18px;background:#fffbe6;border:2px solid #000;box-shadow:4px 4px 0 #000;font-size:13px;line-height:1.7';
+  card.innerHTML = `
+    <div style="font-weight:700;font-size:14px;margin-bottom:6px">☗ Foreman · 任务调度</div>
+    <div style="color:#333">
+      跟"团队讨论"频道的区别：<br>
+      <b>团队讨论</b>是<u>你直接跟同事聊天</u>——发一条消息，路由挑一个同事回你，或者你 @ 指定人。<br>
+      <b>Foreman</b>是<u>你派给它一个复杂任务</u>——它自动拆解 → 分派 → 收集 → 汇总给你，你只看结果。<br>
+    </div>
+    <div style="margin-top:10px;font-weight:600">试试这些任务：</div>
+    <div id="foreman-examples" style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
+      <button class="fx-btn" data-fx="帮我调研 3 个前端可视化图表库（AntV / ECharts / Chart.js），各写 80 字优劣">📊 调研 3 个图表库并对比</button>
+      <button class="fx-btn" data-fx="写一份 Python FastAPI 教学大纲，10 章，每章 1 句话描述">📚 出一份 FastAPI 教学大纲</button>
+      <button class="fx-btn" data-fx="给我 5 个提高小团队 daily standup 效率的建议，每条 30 字">💡 出建议：如何提高 standup 效率</button>
+    </div>
+  `;
+  // 样式内联的按钮
+  const style = document.createElement('style');
+  style.textContent = `#foreman-examples .fx-btn{background:#fff;border:1.5px solid #000;padding:8px 12px;text-align:left;cursor:pointer;font-size:12.5px;box-shadow:2px 2px 0 #000;transition:transform .1s}#foreman-examples .fx-btn:hover{transform:translate(-1px,-1px);box-shadow:3px 3px 0 #000}`;
+  card.appendChild(style);
+  messagesEl.appendChild(card);
+  card.querySelectorAll('.fx-btn').forEach(b => {
+    b.onclick = () => {
+      inputEl.value = b.dataset.fx;
+      inputEl.focus();
+      card.remove();
+    };
+  });
+}
 
 /* ─── 权限档位 ─── */
 const permSelect = document.getElementById('perm-level');

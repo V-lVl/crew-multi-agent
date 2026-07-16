@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import json
 import os
 import sqlite3
@@ -190,9 +191,9 @@ def router_system(active: list[str]) -> str:
 
 # ─────────────────────────── 模型调用（多 provider 兼容） ───────────────────────────
 async def call_ark(messages: list[dict], max_tokens: int = 400, temperature: float = 0.85,
-                   agent_name: str = "") -> str:
+                   agent_name: str = "", on_delta=None) -> str:
     """兼容旧名。真正走 call_llm。"""
-    return await call_llm(messages, max_tokens, temperature, agent_name=agent_name)
+    return await call_llm(messages, max_tokens, temperature, agent_name=agent_name, on_delta=on_delta)
 
 
 async def call_llm(
@@ -200,6 +201,7 @@ async def call_llm(
     max_tokens: int = 400,
     temperature: float = 0.85,
     agent_name: str = "",
+    on_delta=None,
 ) -> str:
     """调用当前配置的 LLM。
 
@@ -207,6 +209,7 @@ async def call_llm(
       · 上下文过长时裁剪（保 system + 最近消息）
       · 429/5xx 指数退避重试 3 次
       · 记录 usage 到 team.db 的 llm_usage 表
+      · on_delta(chunk: str) 若给了，走流式：每收到一小段就回调一次；最终 return 完整 text
     """
     import pricing as _pricing
     import redact as _redact
@@ -272,21 +275,63 @@ async def call_llm(
                         comp_tok = u.get("output_tokens", 0)
                 else:
                     # OpenAI 兼容
-                    body = json.dumps(
-                        {"model": model, "messages": messages,
-                         "max_tokens": max_tokens, "temperature": temperature},
-                        ensure_ascii=False,
-                    ).encode("utf-8")
+                    stream = on_delta is not None
+                    body_dict = {"model": model, "messages": messages,
+                                 "max_tokens": max_tokens, "temperature": temperature}
+                    if stream:
+                        body_dict["stream"] = True
+                        body_dict["stream_options"] = {"include_usage": True}
+                    body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
                     headers = {"Content-Type": "application/json"}
                     if key:
                         headers["Authorization"] = f"Bearer {key}"
                     req = urllib.request.Request(endpoint, data=body, headers=headers)
-                    with urllib.request.urlopen(req, timeout=60) as r:
-                        data = json.loads(r.read().decode("utf-8"))
-                        text = data["choices"][0]["message"]["content"].strip()
-                        u = data.get("usage", {})
-                        prompt_tok = u.get("prompt_tokens", 0)
-                        comp_tok = u.get("completion_tokens", 0)
+                    if stream:
+                        # ─── SSE 流式 ───
+                        text_parts = []
+                        prompt_tok = 0
+                        comp_tok = 0
+                        loop = asyncio.get_event_loop() if False else None  # placeholder
+                        # 用 main-thread loop 也不行，这里在 _sync 里跑；on_delta 由外层包装成 thread-safe
+                        with urllib.request.urlopen(req, timeout=120) as r:
+                            buf = b""
+                            for raw_line in r:
+                                if not raw_line:
+                                    continue
+                                buf += raw_line
+                                # SSE 一条以空行分隔；这里逐行处理 `data: ...`
+                                line = raw_line.decode("utf-8", "ignore").strip()
+                                if not line or not line.startswith("data:"):
+                                    continue
+                                payload = line[5:].strip()
+                                if payload == "[DONE]":
+                                    break
+                                try:
+                                    evt = json.loads(payload)
+                                except Exception:
+                                    continue
+                                choices = evt.get("choices") or []
+                                if choices:
+                                    delta = choices[0].get("delta") or {}
+                                    chunk = delta.get("content") or ""
+                                    if chunk:
+                                        text_parts.append(chunk)
+                                        try:
+                                            on_delta(chunk)
+                                        except Exception as _e:
+                                            print(f"[stream on_delta error] {_e}")
+                                u = evt.get("usage") or {}
+                                if u:
+                                    prompt_tok = u.get("prompt_tokens", prompt_tok)
+                                    comp_tok = u.get("completion_tokens", comp_tok)
+                        text = "".join(text_parts).strip()
+                    else:
+                        with urllib.request.urlopen(req, timeout=60) as r:
+                            data = json.loads(r.read().decode("utf-8"))
+                            text = data["choices"][0]["message"]["content"].strip()
+                            u = data.get("usage", {})
+                            prompt_tok = u.get("prompt_tokens", 0)
+                            comp_tok = u.get("completion_tokens", 0)
 
                 # 有些 provider 不返回 usage — 用估算
                 if not prompt_tok:
@@ -651,13 +696,46 @@ async def route_message(text: str) -> str:
 async def agent_reply(agent: str, _chain_depth: int = 0) -> None:
     async with room.lock:
         await room.push_typing(agent, True)
+        # ─── 流式：先建气泡 → 分片追加 → 落盘 ───
+        msg_id = f"m_{int(time.time()*1000)}_{secrets.token_hex(3)}"
+        started = False
+        loop = asyncio.get_running_loop()
+
+        async def _emit_start():
+            payload = {"type": "msg_start", "msg_id": msg_id, "role": "agent", "name": agent, "ts": time.time()}
+            if agent in AGENTS:
+                payload["emoji"] = AGENTS[agent]["emoji"]
+                payload["color"] = AGENTS[agent]["color"]
+                payload["title"] = AGENTS[agent]["role"]
+            await room.broadcast(payload)
+
+        async def _emit_delta(chunk: str):
+            await room.broadcast({"type": "msg_delta", "msg_id": msg_id, "chunk": chunk})
+
+        def on_delta(chunk: str):
+            nonlocal started
+            if not started:
+                started = True
+                asyncio.run_coroutine_threadsafe(_emit_start(), loop)
+            asyncio.run_coroutine_threadsafe(_emit_delta(chunk), loop)
+
         try:
-            reply = await agent_reply_with_tools(agent)
+            reply = await agent_reply_with_tools(agent, on_delta=on_delta)
         finally:
             await room.push_typing(agent, False)
-        await room.push_message("agent", agent, reply)
+        # 结束：如果启动了流式，通知前端 finalize；否则走原来的 push_message（非流式模式）
+        if started:
+            await room.broadcast({"type": "msg_end", "msg_id": msg_id, "content": reply})
+            # 落库（不再 broadcast message，避免重复）
+            ts = time.time()
+            item = {"role": "agent", "name": agent, "content": reply, "ts": ts, "kind": "msg"}
+            room.history.append(item)
+            if room.topic_id is None:
+                room.topic_id = db_create_topic("临时话题", room.roster)
+            db_add_message(room.topic_id, "agent", agent, reply, "msg", ts)
+        else:
+            await room.push_message("agent", agent, reply)
     # ─── Agent → Agent 定向 @ 转派 ────────────────────────────
-    # 深度 <3 时检查 reply 里有没有 @ 另一个在场 agent
     if _chain_depth < 3:
         mentioned = detect_mention(reply)
         if mentioned and mentioned != agent and mentioned in room.roster:
@@ -744,10 +822,13 @@ def _format_tool_result(qualified_name: str, result: dict) -> str:
     return f"[tool_result] {qualified_name} ✓ 结果：\n{text}"
 
 
-async def agent_reply_with_tools(agent: str) -> str:
+async def agent_reply_with_tools(agent: str, on_delta=None) -> str:
     """让某 agent 回复；如果它调用工具，就跑循环直到给出终稿。
 
     返回：最终给用户看的文本。
+    on_delta(chunk) 可选：只在"确定是终稿（无 tool_call）"的那一轮开始流式回调。
+      为了不把 ```tool_call ...``` JSON 也流给前端，做法是给底层 call_ark 一个包装 on_delta：
+      前 60 字符先缓冲，判断是不是 tool_call 开头，是就不再往前吐 delta；否则从头 flush + 后续正常流。
     """
     tools_prompt = _build_tools_prompt(agent)
     base_context = room.build_context(agent)
@@ -761,10 +842,36 @@ async def agent_reply_with_tools(agent: str) -> str:
         elif isinstance(sys_content, list):
             base_context[0]["content"].append({"type": "text", "text": tools_prompt})
 
+    def _make_guarded_stream(cb):
+        """包装 on_delta：先缓冲，判断不是 tool_call 才开始 flush。返回 (guarded_on_delta, finalize)。"""
+        state = {"buf": "", "decided": False, "is_tool": False}
+        SNIFF = 40  # 前 40 字符足以判断 ```tool_call
+
+        def guarded(chunk: str):
+            if state["decided"]:
+                if not state["is_tool"]:
+                    cb(chunk)
+                return
+            state["buf"] += chunk
+            # 判定：看到 ``` 后紧接 tool_call 就锁死 is_tool
+            b = state["buf"].lstrip()
+            if b.startswith("```tool_call") or "```tool_call" in state["buf"][:SNIFF+10]:
+                state["decided"] = True
+                state["is_tool"] = True
+                return
+            # 前 SNIFF 字符还没看到 tool_call 头 → 视为终稿，flush 缓冲 + 后续照发
+            if len(state["buf"]) >= SNIFF or "\n" in state["buf"]:
+                state["decided"] = True
+                state["is_tool"] = False
+                cb(state["buf"])
+        return guarded
+
     # tool call 循环
     conversation = list(base_context)  # working copy
     for iteration in range(MAX_TOOL_ITERATIONS):
-        reply = await call_ark(conversation, agent_name=agent)
+        # 只在有 on_delta 时启用流式；每轮都尝试，靠 guarded 决定要不要 flush
+        this_on_delta = _make_guarded_stream(on_delta) if on_delta else None
+        reply = await call_ark(conversation, agent_name=agent, on_delta=this_on_delta)
         tool_call = _extract_tool_call(reply)
 
         if not tool_call:
@@ -812,7 +919,8 @@ async def agent_reply_with_tools(agent: str) -> str:
         "role": "user",
         "content": "（工具调用次数达上限，请基于已有信息给出最终回复，别再调工具了）",
     })
-    return await call_ark(conversation, agent_name=agent)
+    return await call_ark(conversation, agent_name=agent,
+                          on_delta=_make_guarded_stream(on_delta) if on_delta else None)
 
 
 async def summarize_topic(topic_id: int | None = None, history: list[dict] | None = None) -> None:
