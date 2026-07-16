@@ -207,8 +207,72 @@ def run_uvicorn() -> None:
             pass
 
 
+def _find_app_browser() -> tuple[str, list[str]] | None:
+    """找一个能以 --app=URL 弹纯净窗口的浏览器。返回 (exe_path, args_before_url) 或 None。
+
+    Chrome/Edge 都支持 --app=<url>：无地址栏、无标签、无书签，看起来像原生桌面应用。
+    优先级：Edge（Win10/11 自带） > Chrome。
+    """
+    if sys.platform != "win32":
+        return None
+    candidates = [
+        # Edge（Win10/11 自带）
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
+        # Chrome
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        # Chromium/Brave（兜底）
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return (p, [])
+    return None
+
+
+def _open_desktop_window(data_dir: Path) -> bool:
+    """尝试弹一个"看起来像桌面应用"的独立窗口。
+
+    优先用 Edge/Chrome 的 --app 模式：无地址栏、无标签、独立 user-data-dir。
+    成功返回 True 并让主线程阻塞在等待窗口关闭上；失败返回 False，由调用方降级。
+    """
+    found = _find_app_browser()
+    if not found:
+        _log("找不到 Edge/Chrome，无法弹桌面窗")
+        return False
+    exe, pre_args = found
+
+    # 独立 user-data-dir：避免和用户日常的浏览器窗口混在一起、避免抢占已有 profile
+    profile_dir = data_dir / "browser_profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    args = [
+        exe,
+        *pre_args,
+        f"--app={URL}",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        f"--window-size=1280,820",
+    ]
+    _log(f"启动桌面窗: {exe}")
+    try:
+        import subprocess
+        # 用 Popen 起，等它退出（用户关掉窗口即退出 Crew）
+        proc = subprocess.Popen(args, close_fds=False)
+        proc.wait()
+        _log("桌面窗已关闭，Crew 退出")
+        return True
+    except Exception as e:
+        _log(f"启动桌面窗失败: {e}")
+        return False
+
+
 def _open_in_browser() -> None:
-    """打开系统浏览器指向 URL；有三级兜底，任何一步成功即可。之后主线程 hang 住让 daemon 存活。"""
+    """降级：打开系统默认浏览器指向 URL。之后主线程 hang 住让 daemon 存活。"""
     opened = False
     try:
         import webbrowser
@@ -276,16 +340,29 @@ def main() -> None:
     time.sleep(0.5)
     _log("server ready, opening desktop window...")
 
-    # 4. 主线程开原生窗口（可选，缺 .NET runtime 时降级浏览器）
-    # v3.0.2 起：优先浏览器打开，避免 pywebview + pythonnet 的复杂依赖
-    # 如果用户要原生窗口体验，装 WebView2 Runtime + .NET Desktop Runtime 8+，
-    # 并把 CREW_USE_WEBVIEW=1 加到环境变量即可
-    use_webview = os.environ.get("CREW_USE_WEBVIEW", "0") == "1"
-    if not use_webview:
-        _log("直接用浏览器打开（默认策略）")
+    # 4. 桌面窗策略：
+    # 默认：用 Edge/Chrome --app 模式弹独立窗口（Win10/11 自带 Edge，无需额外 runtime）
+    # CREW_USE_BROWSER=1：直接开系统默认浏览器（不弹独立窗）
+    # CREW_USE_WEBVIEW=1：用 pywebview + pythonnet（历史选项，依赖 .NET runtime，不推荐）
+    if os.environ.get("CREW_USE_BROWSER", "0") == "1":
+        _log("CREW_USE_BROWSER=1：走系统默认浏览器")
         _open_in_browser()
         return
 
+    if os.environ.get("CREW_USE_WEBVIEW", "0") == "1":
+        _log("CREW_USE_WEBVIEW=1：尝试 pywebview（需要 .NET runtime）")
+        _launch_pywebview()
+        return
+
+    # 默认：Edge/Chrome --app 桌面窗
+    ok = _open_desktop_window(data_dir)
+    if not ok:
+        _log("桌面窗启动失败，降级到系统浏览器")
+        _open_in_browser()
+
+
+def _launch_pywebview() -> None:
+    """老路径：用 pywebview 弹原生窗口。需要 pythonnet + .NET runtime 都能加载。"""
     os.environ.setdefault("PYTHONNET_RUNTIME", "coreclr")
     dotnet_root = r"C:\Program Files\dotnet"
     if os.path.isdir(dotnet_root):
@@ -305,45 +382,7 @@ def main() -> None:
         webview.start(gui=None, debug=False)
     except Exception as e:
         _log(f"pywebview 失败: {e}，退回浏览器")
-        try:
-            # webbrowser.open 有时静默失败；用 cmd start 更可靠
-            opened = False
-            try:
-                import webbrowser
-                opened = webbrowser.open(URL)
-            except Exception as be:
-                _log(f"webbrowser.open 失败: {be}")
-            if not opened:
-                try:
-                    import subprocess
-                    subprocess.Popen(["cmd", "/c", "start", "", URL], shell=False)
-                    opened = True
-                    _log("用 cmd start 打开浏览器")
-                except Exception as se:
-                    _log(f"cmd start 也失败: {se}")
-            if not opened:
-                # 最后一招：os.startfile 直接开 URL
-                try:
-                    import os as _os
-                    _os.startfile(URL)  # type: ignore
-                    opened = True
-                    _log("用 os.startfile 打开浏览器")
-                except Exception as oe:
-                    _log(f"os.startfile 也失败: {oe}")
-
-            import ctypes
-            hint = f"已用浏览器打开 {URL}" if opened else f"请手动在浏览器打开：\n{URL}"
-            ctypes.windll.user32.MessageBoxW(
-                0,
-                f"Crew 桌面窗口启动失败（缺 .NET Runtime）\n{hint}",
-                "Crew · 窗口降级",
-                0x30,  # MB_ICONWARNING
-            )
-            # 让用户浏览器用着，主线程 hang 住让 daemon 存活
-            while True:
-                time.sleep(3600)
-        except Exception:
-            pass
+        _open_in_browser()
 
 
 if __name__ == "__main__":
