@@ -986,6 +986,7 @@
     </div>
     <div class="right">
       <!-- 今日用量徽章 -->
+      <button class="btn mini" id="help-btn" title="使用帮助" style="font-size:12px">?</button>
       <button class="btn mini" id="usage-btn" title="今日 LLM 用量" style="font-size:11px">💰 —</button>
       <!-- 设置按钮：改 provider/model/key -->
       <button class="btn mini" id="settings-btn" title="设置 · provider / model / API key">⚙</button>
@@ -1371,6 +1372,47 @@ window.addEventListener('online', () => {
 });
 
 connectWs();
+
+// 首次打开的欢迎引导
+function maybeShowOnboarding() {
+  if (localStorage.getItem('crew-onboarded-v1') === '1') return;
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--paper);border:2px solid var(--ink);box-shadow:6px 6px 0 var(--shadow-ink);padding:24px 28px;max-width:560px;line-height:1.7">
+      <h2 style="margin:0 0 16px 0;font-size:18px">👋 欢迎来到 Crew · 多 Agent 工作间</h2>
+      <div style="font-size:13px;color:var(--ink)">
+        <p style="margin:8px 0"><strong>1. 直接聊天</strong>：左下 <code>SEND</code> 发消息，勾选的成员会依次回复。</p>
+        <p style="margin:8px 0"><strong>2. 定向 @</strong>：想让某位 agent 单独回，输入 <code>@Ash 你的问题</code>。可以链式转派：<code>@Ash 你调查一下，做完 @Owl 帮你审阅</code>。</p>
+        <p style="margin:8px 0"><strong>3. 让 agent 用工具（MCP）</strong>：点右上 <code>🔧</code> 打开工具面板 —— 每个工具都有<span style="background:var(--yellow);padding:0 4px;border:1px solid var(--ink)">▶ 试一下</span>按钮，一键把示例填入输入框。</p>
+        <p style="margin:8px 0"><strong>4. Foreman（任务调度）</strong>：左上 <code>☗ Foreman</code> —— 交给一个复杂任务，自动拆分工序、分派同事、执行结果打包给你。</p>
+        <p style="margin:8px 0"><strong>5. 用量与费用</strong>：右上 <code>💰</code> —— 今日 token 消耗、7 天趋势、按 agent 拆分、MCP tool 调用统计都在里面。</p>
+        <p style="margin:8px 0"><strong>6. 其他按钮</strong>：<code>◐</code> 深浅主题 · <code>📂</code> 切 workspace · <code>👤</code> 改我的名字 · <code>👥</code> Marketplace</p>
+      </div>
+      <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn mini" id="onboard-mcp" style="font-size:12px">先看看 MCP 有啥工具</button>
+        <button class="btn primary" id="onboard-close" style="font-size:13px">开始使用 ↵</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('onboard-close').onclick = () => {
+    localStorage.setItem('crew-onboarded-v1', '1');
+    modal.remove();
+  };
+  document.getElementById('onboard-mcp').onclick = () => {
+    localStorage.setItem('crew-onboarded-v1', '1');
+    modal.remove();
+    openMCP();
+  };
+}
+setTimeout(maybeShowOnboarding, 400);
+
+// 顶栏 ? 帮助按钮 —— 随时能再看引导
+document.getElementById('help-btn').onclick = () => {
+  localStorage.removeItem('crew-onboarded-v1');
+  maybeShowOnboarding();
+};
 
 function updateHeader() {
   if (CURRENT_TOPIC && CURRENT_TITLE) {
@@ -2360,16 +2402,30 @@ async function openMCP() {
 function renderMCPBody(servers, agentTools) {
   const body = document.getElementById('mcp-body');
   const statusColor = {running:'#4a7', stopped:'#888', dead:'#c33', starting:'#DEAA0C'};
+
+  // 常用 tool 示例（点击后自动填入输入框）
+  const EXAMPLES = {
+    'time.now':        '@Ash 用 time.now 查现在北京时间（tz=Asia/Shanghai）',
+    'fetch.fetch_url': '@Ash 用 fetch.fetch_url 抓 https://example.com 首页内容，提取标题',
+    'filesystem.read_file':  '@Ash 用 filesystem.read_file 读 C:\\\\Users\\\\LENOVO\\\\Desktop\\\\readme.txt',
+    'filesystem.list_dir':   '@Ash 用 filesystem.list_dir 列出 C:\\\\Users\\\\LENOVO\\\\Desktop 里有什么',
+    'memory.add':      '@Ash 用 memory.add 记一条：项目 crew 用 doubao-seed-1-6 模型',
+    'memory.search':   '@Ash 用 memory.search 搜"doubao"，看看之前记了什么',
+    'memory.list':     '@Ash 用 memory.list 列出所有已记忆的条目',
+    'shell.run':       '@Ash 用 shell.run 执行 whoami 命令',
+  };
+
   let html = `
-    <div style="margin-bottom:12px;font-size:13px;color:#555">
-      MCP 让 agent 通过标准协议调用外部工具（读文件、抓 URL、执行命令等）。开关 server 会立即生效。
+    <div style="margin-bottom:12px;padding:10px 12px;background:var(--yellow-soft, #fff8dc);border:1px solid var(--ink);font-size:12px;line-height:1.7">
+      <strong>什么是 MCP？</strong> 让 agent 能"动手"用外部工具 —— 查时间、抓网页、读文件、执行命令、记忆等。<br>
+      <strong>怎么用？</strong> 在聊天框 @ 某个 agent，说"用 xxx.tool 做什么"，或者点下面表格里的 <span style="background:var(--yellow);padding:0 4px;border:1px solid var(--ink);font-family:monospace">▶ 试一下</span> 直接把示例填入输入框。
     </div>
     <table style="width:100%;border-collapse:collapse">
       <thead>
         <tr style="background:#f0e5c6;border-bottom:2px solid #1a1a1a;text-align:left">
           <th style="padding:8px">名称</th>
           <th style="padding:8px">状态</th>
-          <th style="padding:8px">工具</th>
+          <th style="padding:8px">工具（点▶试）</th>
           <th style="padding:8px">描述</th>
           <th style="padding:8px">操作</th>
         </tr>
@@ -2385,7 +2441,15 @@ function renderMCPBody(servers, agentTools) {
     const restartBtn = s.status === 'running'
       ? `<button class="btn mini" data-mcp-restart="${escapeHTML(s.name)}" style="margin-left:6px">重启</button>`
       : '';
-    const toolNames = s.tools.map(t => `<code style="font-size:11px">${escapeHTML(t.name)}</code>`).join(' ');
+    const toolNames = (s.tools || []).map(t => {
+      const full = `${s.name}.${t.name}`;
+      const example = EXAMPLES[full] || `@Ash 用 ${full} 做...`;
+      const desc = t.description ? escapeHTML(t.description.slice(0, 100)) : '';
+      return `<div style="margin:2px 0;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <code style="font-size:11px;background:#f4ecd8;padding:1px 4px;border:1px solid #ccc" title="${desc}">${escapeHTML(t.name)}</code>
+        <button class="btn mini" data-mcp-try="${escapeHTML(example)}" style="font-size:10px;padding:1px 6px">▶ 试一下</button>
+      </div>`;
+    }).join('') || '<span style="color:#999">—</span>';
     const err = s.last_error
       ? `<div style="color:#c33;font-size:11px;margin-top:4px">⚠ ${escapeHTML(s.last_error.slice(0, 100))}</div>`
       : '';
@@ -2393,7 +2457,7 @@ function renderMCPBody(servers, agentTools) {
       <tr style="border-bottom:1px solid #ddd;vertical-align:top">
         <td style="padding:8px"><strong>${escapeHTML(s.name)}</strong></td>
         <td style="padding:8px;color:${color}"><strong>${escapeHTML(s.status)}</strong>${err}</td>
-        <td style="padding:8px">${toolNames || '<span style="color:#999">—</span>'}</td>
+        <td style="padding:8px">${toolNames}</td>
         <td style="padding:8px;color:#555;font-size:12px">${escapeHTML(s.description)}</td>
         <td style="padding:8px;white-space:nowrap">${enabledCheck}${restartBtn}</td>
       </tr>
@@ -2459,6 +2523,19 @@ function renderMCPBody(servers, agentTools) {
       btn.disabled = true; btn.textContent = '…';
       await fetch(`/api/mcp/servers/${encodeURIComponent(name)}/restart`, {method:'POST'});
       openMCP();
+    };
+  });
+  body.querySelectorAll('[data-mcp-try]').forEach(btn => {
+    btn.onclick = () => {
+      const example = btn.dataset.mcpTry;
+      const input = document.getElementById('input');
+      if (input) {
+        input.value = example;
+        input.focus();
+        // 关掉 MCP modal
+        const modal = document.getElementById('mcp-modal');
+        if (modal) modal.style.display = 'none';
+      }
     };
   });
   body.querySelectorAll('[data-mcp-save-agent]').forEach(btn => {
@@ -2606,16 +2683,21 @@ document.getElementById('usage-btn').onclick = async () => {
     fetch('/api/usage/mcp_tools?days=7').then(r => r.json()),
   ]);
   const d = todayR;
-  const ts = (tsR.rows || []).slice().reverse();  // 让最近的在右边
+  const ts = (tsR.series || tsR.rows || []).slice();  // API 用 series
   const toolStats = toolsR.tools || {};
 
   // 迷你条形图
   const maxCost = Math.max(0.0001, ...ts.map(r => r.cost || 0));
+  const dayLabel = (d) => {
+    if (typeof d === 'number') { const dt = new Date(d * 1000); return `${dt.getMonth()+1}/${dt.getDate()}`; }
+    if (typeof d === 'string' && d.length >= 10) return d.slice(5);
+    return String(d);
+  };
   const barsHtml = ts.map(r => {
-    const h = Math.round((r.cost / maxCost) * 60);
-    return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1">
-      <div style="height:${h}px;width:100%;background:var(--yellow);border:1px solid var(--ink);align-self:flex-end" title="$${(r.cost||0).toFixed(4)}"></div>
-      <div style="font-size:10px;color:var(--dim)">${r.day.slice(5)}</div>
+    const h = Math.round(((r.cost || 0) / maxCost) * 60);
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;min-width:22px">
+      <div style="height:${Math.max(2,h)}px;width:100%;background:var(--yellow);border:1px solid var(--ink);align-self:flex-end" title="$${(r.cost||0).toFixed(4)} · ${r.tokens||0} tok · ${r.calls||0} 次"></div>
+      <div style="font-size:10px;color:var(--dim)">${dayLabel(r.day)}</div>
     </div>`;
   }).join('');
 
