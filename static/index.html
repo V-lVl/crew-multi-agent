@@ -539,7 +539,21 @@
     margin-top: 2px;
     font-style: italic;
   }
-  .channel-header .right { display: flex; gap: 8px; align-items: center; }
+  .channel-header .right { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .channel-header .right .topbar-sep {
+    display: inline-block;
+    width: 1px;
+    height: 18px;
+    background: var(--ink);
+    opacity: .25;
+    margin: 0 2px;
+  }
+
+  /* 所有 fixed 定位的浮层不参与 flex 主布局 */
+  body > div[style*="position:fixed"] {
+    flex-shrink: 0 !important;
+    flex-basis: 0 !important;
+  }
 
   #messages {
     flex: 1;
@@ -952,18 +966,18 @@
 <div class="sidebar-left">
   <div class="brand">
     <div class="logo">CREW</div>
-    <button class="btn mini primary" id="new-topic">+ 新</button>
+    <button class="btn mini primary" id="new-topic" title="+ 新话题 · 建一个空白频道开始新对话">+ 新</button>
   </div>
   <!-- 频道切换：讨论 / 任务调度 -->
   <div class="channel-tabs">
-    <button class="ch-tab active" data-ch="team">
+    <button class="ch-tab active" data-ch="team" title="团队讨论 · 用于跟多位同事聊天、开会、头脑风暴。11 位默认同事，可勾选参与本次讨论">
       <span class="ch-tab-emoji">◆</span>
       <div class="ch-tab-info">
         <div class="ch-tab-name">团队讨论</div>
         <div class="ch-tab-sub">11 位同事，聊聊/开会</div>
       </div>
     </button>
-    <button class="ch-tab" data-ch="supervisor">
+    <button class="ch-tab" data-ch="supervisor" title="Foreman 任务调度 · 交给它一个复杂任务，它自动拆分工序、分派同事、拿到结果打包给你（自动化程度更高）">
       <span class="ch-tab-emoji">☗</span>
       <div class="ch-tab-info">
         <div class="ch-tab-name">Foreman</div>
@@ -985,23 +999,26 @@
       <div class="sub" id="header-sub">5 位同事在场 · drafted by ark</div>
     </div>
     <div class="right">
-      <!-- 今日用量徽章 -->
-      <button class="btn mini" id="help-btn" title="使用帮助" style="font-size:12px">?</button>
-      <button class="btn mini" id="usage-btn" title="今日 LLM 用量" style="font-size:11px">💰 —</button>
-      <!-- 设置按钮：改 provider/model/key -->
-      <button class="btn mini" id="settings-btn" title="设置 · provider / model / API key">⚙</button>
-      <button class="btn mini" id="user-btn" title="点我改名（多人协作时会显示）">👤 <span id="user-name">我</span></button>
-      <span id="online-badge" style="font-size:11px;color:var(--dim);margin:0 4px;display:none" title="在线用户"></span>
-      <button class="btn mini" id="workspace-btn" title="切换 workspace">📂 <span id="ws-name">default</span></button>
-      <button class="btn mini" id="theme-btn" title="切换深色/浅色">◐</button>
-      <!-- MCP 按钮 -->
-      <button class="btn mini" id="mcp-btn" title="MCP · 工具与服务器">🔧</button>
-      <!-- 同事管理按钮：创建 / 编辑 / 删除自定义同事 -->
-      <button class="btn mini" id="roster-btn" title="同事管理 · 创建自定义 Agent 同事">👥</button>
+      <!-- 组 1：信息（帮助 · 用量）-->
+      <button class="btn mini" id="help-btn" title="? · 使用帮助 · 随时点开看要点" style="font-size:12px">?</button>
+      <button class="btn mini" id="usage-btn" title="💰 · 今日 token 消耗、费用、近 7 天趋势、按 agent / MCP 工具拆分" style="font-size:11px">💰 —</button>
+      <span class="topbar-sep"></span>
+      <!-- 组 2：身份 / workspace -->
+      <button class="btn mini" id="user-btn" title="👤 · 点这里改自己的显示名（多人协作时别人看到的名字）">👤 <span id="user-name">我</span></button>
+      <span id="online-badge" style="font-size:11px;color:var(--dim);margin:0 4px;display:none" title="其他在线用户"></span>
+      <button class="btn mini" id="workspace-btn" title="📂 · 切换工作区（每个 workspace 独立话题、记忆、MCP 配置）">📂 <span id="ws-name">default</span></button>
+      <span class="topbar-sep"></span>
+      <!-- 组 3：外观 / 工具 / 同事 -->
+      <button class="btn mini" id="theme-btn" title="◐ · 切换深色 / 浅色主题">◐</button>
+      <button class="btn mini" id="mcp-btn" title="🔧 · MCP 工具面板（让 agent 会查时间、读文件、抓网页、记忆等）">🔧</button>
+      <button class="btn mini" id="roster-btn" title="👥 · 同事管理 / Marketplace（新建自定义 agent、编辑角色）">👥</button>
+      <span class="topbar-sep"></span>
+      <!-- 组 4：设置 / 权限 -->
+      <button class="btn mini" id="settings-btn" title="⚙ · 模型 / API key / 系统设置">⚙</button>
       <!-- 权限档位下拉 -->
-      <div class="perm-picker" title="权限档位">
+      <div class="perm-picker" title="权限档位 · agent 使用工具或执行敏感操作时，多严格向你确认">
         <span class="perm-label">审批</span>
-        <select id="perm-level">
+        <select id="perm-level" title="逐条=每次工具调用都要点确认；敏感=只有危险操作确认；自主=全放开">
           <option value="strict">逐条审批</option>
           <option value="balanced" selected>敏感审批</option>
           <option value="autonomous">自主执行</option>
@@ -1025,9 +1042,9 @@
     <div id="attachment-strip" style="display:none;padding:6px 0;font-size:12px"></div>
     <div class="composer">
       <input type="file" id="file-input" style="display:none" accept="image/*,.txt,.md,.json,.csv,.log,.py,.js,.ts,.html,.css,.yaml,.yml,.xml" multiple>
-      <button class="btn" id="attach-btn" title="上传图片/文本文件" style="padding:0 10px">📎</button>
-      <textarea id="input" rows="1" placeholder="Type something…"></textarea>
-      <button class="btn primary" id="send">SEND ↵</button>
+      <button class="btn" id="attach-btn" title="📎 · 上传图片或文本文件作为附件（agent 会一并读取）" style="padding:0 10px">📎</button>
+      <textarea id="input" rows="1" placeholder="发消息（Shift+Enter 换行 · @名字 指名回复 · /discuss 议题 全员讨论）"></textarea>
+      <button class="btn primary" id="send" title="发送消息（Enter）">SEND ↵</button>
     </div>
     <div class="quicks" id="quicks"></div>
   </div>
@@ -1041,10 +1058,11 @@
   </div>
   <div id="agents"></div>
   <div class="right-foot">
-    <div class="foot-item">发一句话<span class="arrow"></span>自动挑人回你</div>
-    <div class="foot-item"><b>@名字</b><span class="arrow"></span>点名回复</div>
-    <div class="foot-item"><b>/discuss 议题</b><span class="arrow"></span>STANDUP</div>
-    <div class="foot-item">点头像<span class="arrow"></span>上台 / 下台</div>
+    <div class="foot-item">发一句话<span class="arrow"></span>自动挑在场同事回你</div>
+    <div class="foot-item"><b>@名字</b><span class="arrow"></span>指名回复（可链式 <code>@X 做完 @Y 审阅</code>）</div>
+    <div class="foot-item"><b>/discuss 议题</b><span class="arrow"></span>触发全员讨论 / 会议</div>
+    <div class="foot-item">点头像 / 复选框<span class="arrow"></span>同事上台 / 下台</div>
+    <div class="foot-item">右键头像<span class="arrow"></span>查看资料</div>
     <div class="foot-item">换话题<span class="arrow"></span>自动摘要归档</div>
   </div>
 </div>
@@ -1157,13 +1175,15 @@ async function refreshTopics() {
   }
   topicsEl.innerHTML = topics.map(t => {
     const time = new Date(t.updated_at * 1000).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    const fullTime = new Date(t.updated_at * 1000).toLocaleString('zh-CN');
+    const tip = `${t.title}${t.summary ? '\n' + t.summary : ''}\n${fullTime} · ${t.msg_count} 条消息\n(点击切入这个话题；右侧 ⇩ 导出 · × 删除)`;
     return `
-      <div class="topic-item ${t.id===CURRENT_TOPIC?'active':''}" data-id="${t.id}" data-title="${escapeAttr(t.title)}">
+      <div class="topic-item ${t.id===CURRENT_TOPIC?'active':''}" data-id="${t.id}" data-title="${escapeAttr(t.title)}" title="${escapeAttr(tip)}">
         <div class="t-title">${escapeHTML(t.title)}</div>
         ${t.summary ? `<div class="t-summary">${escapeHTML(t.summary)}</div>` : ''}
-        <div class="t-meta">${time} · ${t.msg_count}</div>
-        <button class="t-exp" data-id="${t.id}" title="导出 markdown">⇩</button>
-        <button class="t-del" data-id="${t.id}" title="删除">×</button>
+        <div class="t-meta">${time} · <span title="消息条数">💬 ${t.msg_count}</span></div>
+        <button class="t-exp" data-id="${t.id}" title="导出为 markdown 文件">⇩</button>
+        <button class="t-del" data-id="${t.id}" title="删除这个话题（不可恢复）">×</button>
       </div>`;
   }).join('');
   topicsEl.querySelectorAll('.topic-item').forEach(el => {
@@ -1207,14 +1227,15 @@ function renderAgents() {
     const on = ROSTER.includes(a.name);
     const safeEmoji = escapeHTML(String(a.emoji || '●'));
     const safeColor = escapeHTML(String(a.color || '#6b7280'));
+    const tip = on ? `点一下 → ${a.name} 下台（本话题不参与）` : `点一下 → ${a.name} 上台（本话题参与讨论）`;
     return `
-      <div class="agent-item ${on?'on':'off'}" data-name="${escapeAttr(a.name)}">
+      <div class="agent-item ${on?'on':'off'}" data-name="${escapeAttr(a.name)}" title="${escapeAttr(tip + ' · 右键查看资料')}">
         <div class="avatar" style="background:${safeColor}"><img src="/static/avatars/${encodeURIComponent(a.name)}.svg" onerror="this.replaceWith(document.createTextNode(this.getAttribute('data-fallback')))" data-fallback="${safeEmoji}" alt="${safeEmoji}"></div>
         <div class="info">
           <div class="name">${escapeHTML(a.name)}</div>
           <div class="role">${escapeHTML(a.role)}</div>
         </div>
-        <div class="agent-check"></div>
+        <div class="agent-check" title="${on ? '✓ 在场（本话题参与）' : '未在场（点一下上台）'}"></div>
       </div>`;
   }).join('');
   memberCount.textContent = `${ROSTER.length}/${AGENTS.length}`;
@@ -1245,11 +1266,11 @@ document.getElementById('all-on').onclick = () => {
 
 function renderQuicks() {
   const quicks = [
-    { label: 'BRAINSTORM', text: '/discuss ' },
-    { label: 'STANDUP', text: '/discuss 我们今天要讨论：' },
+    { label: 'BRAINSTORM', text: '/discuss ', title: 'BRAINSTORM · 让在场所有同事围绕一个话题各自发言（比较松散、发散思维）。等同于在输入框敲 /discuss <话题>' },
+    { label: 'STANDUP', text: '/discuss 我们今天要讨论：', title: 'STANDUP · 会议模式，让每位同事按次序汇报进度或表态（比较结构化）。基于 /discuss，加了会议开场白' },
   ];
   quicksEl.innerHTML = quicks.map(q =>
-    `<button class="btn" data-text="${escapeAttr(q.text)}">${q.label}</button>`).join('');
+    `<button class="btn" title="${escapeAttr(q.title)}" data-text="${escapeAttr(q.text)}">${q.label}</button>`).join('');
   quicksEl.querySelectorAll('button').forEach(b => {
     b.onclick = () => { inputEl.value = b.dataset.text + inputEl.value; inputEl.focus(); };
   });
@@ -1377,7 +1398,7 @@ connectWs();
 function maybeShowOnboarding() {
   if (localStorage.getItem('crew-onboarded-v1') === '1') return;
   const modal = document.createElement('div');
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;flex-shrink:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center';
   modal.innerHTML = `
     <div style="background:var(--paper);border:2px solid var(--ink);box-shadow:6px 6px 0 var(--shadow-ink);padding:24px 28px;max-width:560px;line-height:1.7">
       <h2 style="margin:0 0 16px 0;font-size:18px">👋 欢迎来到 Crew · 多 Agent 工作间</h2>
@@ -2712,7 +2733,7 @@ document.getElementById('usage-btn').onclick = async () => {
   ).join('');
 
   const modal = document.createElement('div');
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;flex-shrink:0;background:rgba(0,0,0,.35);z-index:9999;display:flex;align-items:center;justify-content:center';
   modal.innerHTML = `
     <div style="background:var(--paper);border:2px solid var(--ink);box-shadow:6px 6px 0 var(--shadow-ink);padding:20px;min-width:560px;max-width:720px;max-height:80vh;overflow:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
