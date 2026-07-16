@@ -246,16 +246,31 @@ class MCPClient:
         """调用一个工具。返回 {content: [{type,text|...}], isError: bool}"""
         return await self._request("tools/call", {
             "name": name, "arguments": arguments or {},
-        }, timeout=self.request_timeout)
+        })
 
     async def list_resources(self) -> list[dict]:
+        """返回 [{uri, name, description?, mimeType?}]。"""
         if "resources" not in self._server_capabilities:
             return []
         result = await self._request("resources/list")
         return result.get("resources", [])
 
     async def read_resource(self, uri: str) -> dict:
+        """读一个资源。返回 {contents: [{uri, mimeType, text|blob}]}."""
         return await self._request("resources/read", {"uri": uri})
+
+    async def list_prompts(self) -> list[dict]:
+        """返回 [{name, description?, arguments?}]。"""
+        if "prompts" not in self._server_capabilities:
+            return []
+        result = await self._request("prompts/list")
+        return result.get("prompts", [])
+
+    async def get_prompt(self, name: str, arguments: dict | None = None) -> dict:
+        """拉一个 prompt。返回 {description, messages: [{role, content}]}."""
+        return await self._request("prompts/get", {
+            "name": name, "arguments": arguments or {},
+        })
 
     @property
     def server_info(self) -> dict:

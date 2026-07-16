@@ -2,7 +2,7 @@
 ; 编译：ISCC.exe crew.iss  →  产出 dist\Crew-Setup-v1.1.exe
 
 #define AppName        "Crew"
-#define AppVersion     "2.0.0"
+#define AppVersion     "3.0.0"
 #define AppPublisher   "Crew"
 #define AppExeName     "crew.exe"
 #define SourceDir      "dist\Crew"

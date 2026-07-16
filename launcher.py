@@ -58,13 +58,60 @@ URL = f"http://127.0.0.1:{PORT}/"
 
 
 def get_data_dir() -> Path:
-    """用户数据目录：%APPDATA%\\Crew\\（Windows）/ ~/.crew/（其他）"""
+    """用户数据目录：%APPDATA%\\Crew\\（Windows）/ ~/.crew/（其他）+ workspace 子目录。
+
+    workspace 名从 <root>/active_workspace 文件读取，默认 'default'。
+    最终目录：<root>/workspaces/<name>/
+    """
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        d = Path(base) / APP_NAME
+        root = Path(base) / APP_NAME
     else:
-        d = Path.home() / f".{APP_NAME.lower()}"
+        root = Path.home() / f".{APP_NAME.lower()}"
+    root.mkdir(parents=True, exist_ok=True)
+
+    # 读当前 workspace 名
+    ws_marker = root / "active_workspace"
+    ws_name = "default"
+    if ws_marker.exists():
+        try:
+            ws_name = ws_marker.read_text(encoding="utf-8").strip() or "default"
+        except Exception:
+            pass
+    # 只允许字母/数字/连字符/下划线
+    import re as _re
+    if not _re.match(r"^[A-Za-z0-9_-]{1,32}$", ws_name):
+        ws_name = "default"
+
+    d = root / "workspaces" / ws_name
     d.mkdir(parents=True, exist_ok=True)
+
+    # ─── 老数据迁移（v3.0 升级路径）───
+    # v2.x 的 team.db / config.json / mcp_servers.json / attachments/ / dynamic_agents.json
+    # 都在 root/ 根目录。首次进 workspaces/default 时把它们平移过来。
+    if ws_name == "default":
+        legacy_files = ["team.db", "config.json", "mcp_servers.json", "dynamic_agents.json"]
+        for fn in legacy_files:
+            src = root / fn
+            dst = d / fn
+            if src.exists() and not dst.exists():
+                try:
+                    import shutil as _sh
+                    _sh.move(str(src), str(dst))
+                except Exception:
+                    pass
+        legacy_att = root / "attachments"
+        new_att = d / "attachments"
+        if legacy_att.exists() and not new_att.exists():
+            try:
+                import shutil as _sh
+                _sh.move(str(legacy_att), str(new_att))
+            except Exception:
+                pass
+
+    # 让 server 知道 root（切换 workspace 用）
+    os.environ["CREW_DATA_ROOT"] = str(root)
+    os.environ["CREW_WORKSPACE"] = ws_name
     return d
 
 
@@ -130,9 +177,21 @@ def run_uvicorn() -> None:
     try:
         import uvicorn
         import server  # noqa: F401
+        # 多人协作：读 config.allow_lan，true 时监听 0.0.0.0
+        host = "127.0.0.1"
+        try:
+            data_dir = Path(os.environ.get("CREW_DATA_DIR", "."))
+            cfg_path = data_dir / "config.json"
+            if cfg_path.exists():
+                import json as _j
+                cfg = _j.loads(cfg_path.read_text(encoding="utf-8"))
+                if cfg.get("allow_lan"):
+                    host = "0.0.0.0"
+        except Exception:
+            pass
         uvicorn.run(
             "server:app",
-            host="127.0.0.1",
+            host=host,
             port=PORT,
             log_level="warning",
             access_log=False,

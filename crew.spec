@@ -14,6 +14,10 @@ from PyInstaller.utils.hooks import collect_all
 # static/ 目录一起打进去，运行时通过 sys._MEIPASS 访问
 datas = [
     ("static", "static"),  # (源, 目标) 目标是相对 _MEIPASS
+    ("marketplace", "marketplace"),  # 兜底模板
+    # pydantic_core 的 native .pyd（PyInstaller 有时漏收）
+    ("D:/Program Files/Python313/Lib/site-packages/pydantic_core/_pydantic_core.cp313-win_amd64.pyd",
+     "pydantic_core"),
 ]
 binaries = []
 hiddenimports = [
@@ -37,8 +41,11 @@ hiddenimports = [
     "supervisor",
     "server",
     "mcp_client",
+    "mcp_http_client",
     "mcp_registry",
     "mcp_builtin_servers",
+    "mcp_memory_server",
+    "redact",
     # pywebview 桌面版
     "webview",
     "webview.platforms.winforms",

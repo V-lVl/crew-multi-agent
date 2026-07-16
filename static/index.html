@@ -21,6 +21,48 @@
     --yellow-2: #ecc866;      /* 浅芥末 */
     --hi: #f5d874;            /* 高亮 */
     --line: #171310;
+    --shadow-ink: #171310;
+  }
+  [data-theme="dark"] {
+    --cream: #1c1b18;         /* 深色主背景 */
+    --cream-2: #262521;       /* 次背景 */
+    --paper: #2a2925;         /* 卡片色 */
+    --ink: #ece7d8;           /* 亮米色文字（保持暖调） */
+    --ink-2: #b5b0a3;         /* 次要文字 */
+    --dim: #7f7a6d;           /* 更淡文字 */
+    --yellow: #f0c25a;        /* 强调色 */
+    --yellow-2: #d9a944;
+    --hi: #f5d874;
+    --line: #ece7d8;
+    --shadow-ink: #000;
+  }
+  /* 深色下：把行内 style 里 #fff / #fbf4dc / #fbf7ea / #fff9e8 等浅色背景全部反转 */
+  [data-theme="dark"] [style*="background:#fff"],
+  [data-theme="dark"] [style*="background: #fff"],
+  [data-theme="dark"] [style*="background:#fbf"],
+  [data-theme="dark"] [style*="background: #fbf"],
+  [data-theme="dark"] [style*="background:#fff9"],
+  [data-theme="dark"] [style*="background: #fff9"] {
+    background: var(--paper) !important;
+    color: var(--ink) !important;
+  }
+  [data-theme="dark"] [style*="color:#666"],
+  [data-theme="dark"] [style*="color: #666"],
+  [data-theme="dark"] [style*="color:#555"],
+  [data-theme="dark"] [style*="color: #555"] {
+    color: var(--ink-2) !important;
+  }
+  [data-theme="dark"] input,
+  [data-theme="dark"] textarea,
+  [data-theme="dark"] select {
+    background: var(--paper);
+    color: var(--ink);
+    border-color: var(--ink);
+  }
+  [data-theme="dark"] .msg-regen {
+    background: var(--paper) !important;
+    color: var(--ink) !important;
+    border-color: var(--dim) !important;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -370,7 +412,7 @@
     border-radius: inherit;
   }
   .topic-item:hover {
-    background: #fbf4dc;
+    background: var(--cream-2);
     transform: rotate(0deg) translate(-1px, -1px);
     box-shadow: 5px 5px 0 var(--ink);
     z-index: 2;
@@ -422,15 +464,19 @@
     font-family: "JetBrains Mono", monospace;
     margin-top: 4px;
   }
-  .topic-item .t-del {
-    position: absolute; right: 4px; top: 4px;
+  .topic-item .t-del, .topic-item .t-exp {
+    position: absolute; top: 4px;
     background: transparent; border: none; cursor: pointer;
     padding: 2px 6px; font-size: 12px;
     display: none;
     color: var(--dim);
   }
-  .topic-item:hover .t-del { display: block; }
+  .topic-item .t-del { right: 4px; }
+  .topic-item .t-exp { right: 24px; }
+  .topic-item:hover .t-del,
+  .topic-item:hover .t-exp { display: block; }
   .topic-item .t-del:hover { color: #b91c1c; }
+  .topic-item .t-exp:hover { color: var(--ink); }
   .empty-hint {
     padding: 20px 14px;
     text-align: center;
@@ -514,6 +560,49 @@
     opacity: .35;
   }
 
+  /* Markdown 渲染 */
+  .msg .content h2 { font-size: 15px; margin: 8px 0 4px; font-weight: 700; }
+  .msg .content h3 { font-size: 14px; margin: 6px 0 3px; font-weight: 700; }
+  .msg .content h4 { font-size: 13px; margin: 4px 0 2px; font-weight: 700; }
+  .msg .content blockquote {
+    margin: 4px 0; padding: 2px 10px;
+    border-left: 3px solid var(--yellow);
+    color: var(--ink-2); font-style: italic;
+  }
+  .msg .content ul { margin: 4px 0 4px 20px; padding: 0; }
+  .msg .content li { margin: 2px 0; }
+  .msg .content strong { font-weight: 700; }
+  .msg .content em { font-style: italic; }
+  .msg .content code {
+    background: var(--cream-2);
+    border: 1px solid var(--dim);
+    padding: 0 4px; border-radius: 2px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12.5px;
+  }
+  .msg .content .code-block {
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    box-shadow: 2px 2px 0 var(--shadow-ink);
+    padding: 8px 12px; margin: 6px 0;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12.5px;
+    overflow-x: auto;
+    position: relative;
+  }
+  .msg .content .code-block code {
+    background: none; border: none; padding: 0;
+    white-space: pre; display: block;
+  }
+  .msg .content .code-block .code-lang {
+    display: inline-block; padding: 0 6px; margin-bottom: 4px;
+    background: var(--yellow); color: var(--ink);
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .msg .content a { color: var(--yellow); text-decoration: underline; }
+  .msg .content a:hover { color: var(--hi); }
+
   /* 消息：扁平列表，方形头像，无气泡 */
   .msg {
     display: flex;
@@ -526,9 +615,9 @@
   .tool-card {
     margin: 6px 0 6px 52px;   /* 与消息头像对齐 */
     padding: 8px 10px;
-    background: #f0e5c6;      /* 稍深米色 */
-    border: 2px solid #1a1a1a;
-    box-shadow: 3px 3px 0 #1a1a1a;
+    background: var(--paper);      /* 卡片色 */
+    border: 2px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--shadow-ink);
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 12.5px;
     animation: fadeIn .2s ease-out;
@@ -536,12 +625,12 @@
   .tool-card .tool-head {
     display: flex; align-items: center; gap: 6px;
     font-weight: bold; margin-bottom: 4px;
-    color: #1a1a1a;
+    color: var(--ink);
   }
   .tool-card .tool-badge {
-    background: #DEAA0C; color: #1a1a1a;
-    padding: 1px 6px; font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.5px;
+    display: inline-block; padding: 1px 6px;
+    font-weight: 700; font-size: 10px;
+    background: var(--yellow); color: var(--ink);
   }
   .tool-card .tool-badge.result { background: #a0d29c; }
   .tool-card .tool-badge.error  { background: #e29b9b; }
@@ -549,10 +638,10 @@
   .tool-card .tool-body {
     white-space: pre-wrap; word-break: break-all;
     max-height: 200px; overflow-y: auto;
-    color: #333;
+    color: var(--ink-2);
   }
-  .tool-card details summary {
-    cursor: pointer; color: #7a5a00; user-select: none;
+  .tool-card .tool-toggle {
+    cursor: pointer; color: var(--dim); user-select: none;
   }
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(2px); }
@@ -900,6 +989,10 @@
       <button class="btn mini" id="usage-btn" title="今日 LLM 用量" style="font-size:11px">💰 —</button>
       <!-- 设置按钮：改 provider/model/key -->
       <button class="btn mini" id="settings-btn" title="设置 · provider / model / API key">⚙</button>
+      <button class="btn mini" id="user-btn" title="点我改名（多人协作时会显示）">👤 <span id="user-name">我</span></button>
+      <span id="online-badge" style="font-size:11px;color:var(--dim);margin:0 4px;display:none" title="在线用户"></span>
+      <button class="btn mini" id="workspace-btn" title="切换 workspace">📂 <span id="ws-name">default</span></button>
+      <button class="btn mini" id="theme-btn" title="切换深色/浅色">◐</button>
       <!-- MCP 按钮 -->
       <button class="btn mini" id="mcp-btn" title="MCP · 工具与服务器">🔧</button>
       <!-- 同事管理按钮：创建 / 编辑 / 删除自定义同事 -->
@@ -1068,13 +1161,24 @@ async function refreshTopics() {
         <div class="t-title">${escapeHTML(t.title)}</div>
         ${t.summary ? `<div class="t-summary">${escapeHTML(t.summary)}</div>` : ''}
         <div class="t-meta">${time} · ${t.msg_count}</div>
+        <button class="t-exp" data-id="${t.id}" title="导出 markdown">⇩</button>
         <button class="t-del" data-id="${t.id}" title="删除">×</button>
       </div>`;
   }).join('');
   topicsEl.querySelectorAll('.topic-item').forEach(el => {
     el.onclick = e => {
       if (e.target.classList.contains('t-del')) return;
+      if (e.target.classList.contains('t-exp')) return;
       loadTopic(parseInt(el.dataset.id), el.dataset.title);
+    };
+  });
+  topicsEl.querySelectorAll('.t-exp').forEach(el => {
+    el.onclick = e => {
+      e.stopPropagation();
+      const id = el.dataset.id;
+      // 简单菜单：默认 md，Shift+点 = json
+      const fmt = e.shiftKey ? 'json' : 'md';
+      window.location.href = `/api/topics/${id}/export?fmt=${fmt}`;
     };
   });
   topicsEl.querySelectorAll('.t-del').forEach(el => {
@@ -1172,7 +1276,15 @@ function hideWsBanner() {
 
 function connectWs() {
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  // 多人协作：本地存一个用户名，连 WS 时带上
+  let userName = localStorage.getItem('crew-user') || '';
+  if (!userName) {
+    // 无用户名：默认从设备名派生，不弹窗打扰
+    userName = '我';
+    localStorage.setItem('crew-user', userName);
+  }
+  const q = '?user=' + encodeURIComponent(userName);
+  ws = new WebSocket(`${proto}://${location.host}/ws${q}`);
   ws.onopen = async () => {
     wsReconnectDelay = 1000;  // 重置退避
     hideWsBanner();
@@ -1196,7 +1308,11 @@ function connectWs() {
     if (m.type === 'state') {
       ROSTER = m.roster || [];
       CURRENT_TOPIC = m.topic_id;
+      if (m.self_user) document.getElementById('user-name').textContent = m.self_user;
+      updateOnline(m.online || [m.self_user || '我']);
       renderAgents(); updateHeader(); refreshTopics();
+    } else if (m.type === 'presence') {
+      updateOnline(m.online || []);
     } else if (m.type === 'switched') {
       ROSTER = m.roster || ROSTER;
       CURRENT_TOPIC = m.topic_id;
@@ -1270,13 +1386,60 @@ function escapeHTML(s){
 }
 function escapeAttr(s){ return escapeHTML(s); }
 function renderContent(s) {
+  // 1. 先切出代码块 ```lang\ncode\n```，占位后再重组
+  const codeBlocks = [];
+  s = s.replace(/```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push({lang: lang || '', code: code.replace(/\n+$/, '')});
+    return `\x00CODEBLOCK${idx}\x00`;
+  });
+
+  // 2. 转义整段（inline HTML 不放行）
   s = escapeHTML(s);
+
+  // 3. Markdown 转换
+  // 标题（# / ## / ###）
+  s = s.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>');
+  s = s.replace(/^##\s+(.+)$/gm, '<h3>$1</h3>');
+  s = s.replace(/^#\s+(.+)$/gm, '<h2>$1</h2>');
+  // 引用
+  s = s.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
+  // 无序列表（- 或 *）
+  s = s.replace(/^(\s*)[-*]\s+(.+)$/gm, '<li>$2</li>');
+  // 有序列表
+  s = s.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
+  // 连续 <li> 合并成 <ul>
+  s = s.replace(/(<li>[\s\S]*?<\/li>)(\n(<li>[\s\S]*?<\/li>))+/g, m => '<ul>' + m.replace(/\n/g, '') + '</ul>');
+  s = s.replace(/(?<!<\/ul>)(<li>.+?<\/li>)(?!<)/g, '<ul>$1</ul>');
+  // 粗体 **x** / __x__
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+  // 斜体 *x* / _x_
+  s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+  s = s.replace(/(?<!_)_([^_\n]+)_(?!_)/g, '<em>$1</em>');
   // inline code `xxx`
   s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // 链接 [text](url) — url 已被 escape
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // 裸 URL
+  s = s.replace(/(^|[^"=])(https?:\/\/[^\s<>"]+)/g, '$1<a href="$2" target="_blank">$2</a>');
+  // 换行：markdown 单行内 \n 转 <br>
+  s = s.replace(/\n{2,}/g, '</p><p>');
+  s = s.replace(/\n/g, '<br>');
+
+  // 4. 重组代码块
+  s = s.replace(/\x00CODEBLOCK(\d+)\x00/g, (_, i) => {
+    const {lang, code} = codeBlocks[Number(i)];
+    const langBadge = lang ? `<span class="code-lang">${escapeHTML(lang)}</span>` : '';
+    return `<pre class="code-block">${langBadge}<code>${escapeHTML(code)}</code></pre>`;
+  });
+
+  // 5. @mention（放最后免得被 markdown 语法破坏）
   AGENTS.forEach(a => {
     const re = new RegExp('@' + a.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'g');
     s = s.replace(re, `<span class="mention">@${a.name}</span>`);
   });
+
   return s;
 }
 function formatTime(ts) {
@@ -1816,7 +1979,7 @@ async function openSettings() {
   const hint = document.getElementById('set-guess-hint');
 
   // 切 provider 时：填默认 model + endpoint + 提示
-  providerSel.addEventListener('change', () => {
+  providerSel.addEventListener('change', async () => {
     const opt = providerSel.options[providerSel.selectedIndex];
     modelInput.value = opt.dataset.default || '';
     modelInput.placeholder = `默认: ${opt.dataset.default || '—'}`;
@@ -1832,6 +1995,27 @@ async function openSettings() {
     } else {
       keyDesc.textContent = '还没配置，粘一个进去';
       keyInput.placeholder = '粘贴 key，自动识别 provider';
+    }
+    // Ollama 自动发现
+    if (providerSel.value === 'ollama') {
+      providerHint.textContent = '⏳ 探测本地 Ollama...';
+      try {
+        const r = await fetch('/api/ollama/models');
+        const d = await r.json();
+        if (d.ok && d.models.length > 0) {
+          providerHint.innerHTML = `✅ 检测到 ${d.models.length} 个已装 model：` +
+            d.models.map(m => `<a href="#" data-model="${escapeAttr(m)}" class="ollama-pick" style="margin:0 4px">${escapeHTML(m)}</a>`).join('');
+          providerHint.querySelectorAll('.ollama-pick').forEach(a => {
+            a.onclick = (e) => { e.preventDefault(); modelInput.value = a.dataset.model; };
+          });
+        } else if (d.ok) {
+          providerHint.textContent = '⚠ Ollama 起来了但没装 model。用 `ollama pull llama3` 装一个。';
+        } else {
+          providerHint.textContent = '⚠ 本地 Ollama 未运行。启动后重新打开设置。';
+        }
+      } catch (e) {
+        providerHint.textContent = '⚠ 探测失败：' + e.message;
+      }
     }
   });
 
@@ -2047,7 +2231,114 @@ async function openSettings() {
   };
 }
 
+// 多人协作：在线用户徽章 + 改名
+function updateOnline(users) {
+  const el = document.getElementById('online-badge');
+  if (!el) return;
+  const self = document.getElementById('user-name').textContent;
+  const others = users.filter(u => u !== self);
+  if (others.length === 0) {
+    el.style.display = 'none';
+  } else {
+    el.style.display = 'inline';
+    el.textContent = `+${others.length}: ${others.slice(0,3).join(', ')}${others.length > 3 ? '…' : ''}`;
+  }
+}
+document.getElementById('user-btn').onclick = () => {
+  const cur = localStorage.getItem('crew-user') || '我';
+  const name = prompt('你叫什么？（多人连同一 Crew 时用来区分发言）', cur);
+  if (!name || !name.trim()) return;
+  const clean = name.trim().slice(0, 24);
+  localStorage.setItem('crew-user', clean);
+  document.getElementById('user-name').textContent = clean;
+  // 重连 WS 用新名字生效
+  try { ws && ws.close(); } catch(e){}
+};
+// 初始化用户名显示
+document.getElementById('user-name').textContent = localStorage.getItem('crew-user') || '我';
+
+// Workspace 切换
+(async function initWorkspace() {
+  try {
+    const r = await fetch('/api/workspace');
+    const d = await r.json();
+    document.getElementById('ws-name').textContent = d.active || 'default';
+    window.__WORKSPACES = d;
+  } catch (e) { /* 源码模式可能没实现，忽略 */ }
+})();
+
+document.getElementById('workspace-btn').onclick = async () => {
+  const r = await fetch('/api/workspace');
+  const d = await r.json();
+  const list = d.workspaces || ['default'];
+  const active = d.active || 'default';
+  const items = list.map(w => `<a href="#" data-ws="${escapeAttr(w)}" class="ws-pick" style="display:block;padding:6px 10px;text-decoration:none;color:var(--ink);${w===active?'background:var(--yellow)':''}">${w===active?'▸ ':'  '}${escapeHTML(w)}</a>`).join('');
+  const menu = document.createElement('div');
+  menu.className = 'ws-menu';
+  menu.innerHTML = `
+    <div style="padding:6px 10px;font-size:11px;color:var(--dim);border-bottom:1px solid var(--dim)">workspace 列表</div>
+    ${items}
+    <a href="#" id="ws-new" style="display:block;padding:6px 10px;border-top:1px dashed var(--dim);color:var(--ink);text-decoration:none">+ 新建 workspace</a>`;
+  Object.assign(menu.style, {
+    position:'fixed', background:'var(--paper)', border:'2px solid var(--ink)',
+    boxShadow:'3px 3px 0 var(--shadow-ink)', minWidth:'180px', zIndex:'9999',
+    fontSize:'13px'
+  });
+  const btn = document.getElementById('workspace-btn');
+  const rect = btn.getBoundingClientRect();
+  menu.style.top = (rect.bottom + 4) + 'px';
+  menu.style.right = (window.innerWidth - rect.right) + 'px';
+  document.body.appendChild(menu);
+  const close = () => { menu.remove(); document.removeEventListener('click', onDoc, true); };
+  const onDoc = (e) => { if (!menu.contains(e.target)) close(); };
+  setTimeout(() => document.addEventListener('click', onDoc, true), 10);
+
+  menu.querySelectorAll('.ws-pick').forEach(a => {
+    a.onclick = async (e) => {
+      e.preventDefault();
+      const name = a.dataset.ws;
+      if (name === active) { close(); return; }
+      if (!confirm(`切到 workspace「${name}」需要重启 Crew。现在切吗？`)) { close(); return; }
+      await fetch('/api/workspace/switch', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name})
+      });
+      alert('已切换。请关闭 Crew 后重新打开。');
+      close();
+    };
+  });
+  document.getElementById('ws-new').onclick = async (e) => {
+    e.preventDefault();
+    const name = prompt('新 workspace 名字（字母/数字/-/_，1-32 字符）:');
+    if (!name) return;
+    const r = await fetch('/api/workspace/switch', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name: name.trim()})
+    });
+    if (r.ok) {
+      alert(`workspace「${name}」已建。请关闭 Crew 后重新打开进入。`);
+    } else {
+      const d = await r.json();
+      alert('建失败：' + (d.detail || r.status));
+    }
+    close();
+  };
+};
+
 document.getElementById('settings-btn').onclick = openSettings;
+
+// 主题切换
+(function initTheme() {
+  const saved = localStorage.getItem('crew-theme') || 'light';
+  if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+  document.getElementById('theme-btn').onclick = () => {
+    const cur = document.documentElement.getAttribute('data-theme');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    if (next === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('crew-theme', next);
+  };
+})();
 document.getElementById('mcp-btn').onclick = openMCP;
 document.getElementById('mcp-close').onclick = () => document.getElementById('mcp-modal').style.display = 'none';
 document.getElementById('mcp-bg').onclick = () => document.getElementById('mcp-modal').style.display = 'none';
@@ -2309,12 +2600,96 @@ refreshUsage();
 setInterval(refreshUsage, 30000);
 
 document.getElementById('usage-btn').onclick = async () => {
-  const r = await fetch('/api/usage/today');
-  const d = await r.json();
-  const rows = (d.by_agent || []).map(a =>
-    `<tr><td>${escapeHTML(a.agent)}</td><td style="text-align:right">${a.calls}</td><td style="text-align:right">${(a.tokens/1000).toFixed(1)}k</td><td style="text-align:right">$${a.cost.toFixed(4)}</td></tr>`
+  const [todayR, tsR, toolsR] = await Promise.all([
+    fetch('/api/usage/today').then(r => r.json()),
+    fetch('/api/usage/timeseries?days=7').then(r => r.json()),
+    fetch('/api/usage/mcp_tools?days=7').then(r => r.json()),
+  ]);
+  const d = todayR;
+  const ts = (tsR.rows || []).slice().reverse();  // 让最近的在右边
+  const toolStats = toolsR.tools || {};
+
+  // 迷你条形图
+  const maxCost = Math.max(0.0001, ...ts.map(r => r.cost || 0));
+  const barsHtml = ts.map(r => {
+    const h = Math.round((r.cost / maxCost) * 60);
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1">
+      <div style="height:${h}px;width:100%;background:var(--yellow);border:1px solid var(--ink);align-self:flex-end" title="$${(r.cost||0).toFixed(4)}"></div>
+      <div style="font-size:10px;color:var(--dim)">${r.day.slice(5)}</div>
+    </div>`;
+  }).join('');
+
+  // by_agent 表格
+  const agentRows = (d.by_agent || []).map(a =>
+    `<tr><td style="padding:3px 6px">${escapeHTML(a.agent)}</td><td style="padding:3px 6px;text-align:right">${a.calls}</td><td style="padding:3px 6px;text-align:right">${(a.tokens/1000).toFixed(1)}k</td><td style="padding:3px 6px;text-align:right">$${a.cost.toFixed(4)}</td></tr>`
   ).join('');
-  alert(`今日 LLM 用量\n──────────────\n总调用: ${d.calls} 次\n输入 tokens: ${(d.prompt_tokens/1000).toFixed(1)}k\n输出 tokens: ${(d.completion_tokens/1000).toFixed(1)}k\n合计 tokens: ${(d.total_tokens/1000).toFixed(1)}k\n估算费用: $${d.cost_usd.toFixed(4)}\n\n按 agent 拆分:\n${(d.by_agent||[]).map(a=>`  ${a.agent}: ${a.calls} 次 / ${(a.tokens/1000).toFixed(1)}k tok / $${a.cost.toFixed(4)}`).join('\n') || '  (无数据)'}\n\n(数字每 30 秒自动刷新，本地模型按 $0 计)`);
+
+  // tool 调用统计
+  const toolRows = Object.entries(toolStats).sort((a,b) => (b[1].calls||0) - (a[1].calls||0)).map(([name, s]) =>
+    `<tr><td style="padding:3px 6px">${escapeHTML(name)}</td><td style="padding:3px 6px;text-align:right">${s.calls || 0}</td><td style="padding:3px 6px;text-align:right;color:${(s.errors||0)>0?'#c33':'var(--dim)'}">${s.errors || 0}</td></tr>`
+  ).join('');
+
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `
+    <div style="background:var(--paper);border:2px solid var(--ink);box-shadow:6px 6px 0 var(--shadow-ink);padding:20px;min-width:560px;max-width:720px;max-height:80vh;overflow:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h3 style="margin:0;font-size:15px">💰 用量看板</h3>
+        <button type="button" id="usage-close" style="background:transparent;border:none;font-size:20px;cursor:pointer">×</button>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:4px">今日</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+          <div style="text-align:center;padding:8px;background:var(--cream-2);border:1px solid var(--ink)">
+            <div style="font-size:11px;color:var(--dim)">调用</div>
+            <div style="font-size:18px;font-weight:700">${d.calls || 0}</div>
+          </div>
+          <div style="text-align:center;padding:8px;background:var(--cream-2);border:1px solid var(--ink)">
+            <div style="font-size:11px;color:var(--dim)">输入</div>
+            <div style="font-size:18px;font-weight:700">${((d.prompt_tokens||0)/1000).toFixed(1)}k</div>
+          </div>
+          <div style="text-align:center;padding:8px;background:var(--cream-2);border:1px solid var(--ink)">
+            <div style="font-size:11px;color:var(--dim)">输出</div>
+            <div style="font-size:18px;font-weight:700">${((d.completion_tokens||0)/1000).toFixed(1)}k</div>
+          </div>
+          <div style="text-align:center;padding:8px;background:var(--yellow);border:1px solid var(--ink)">
+            <div style="font-size:11px;color:var(--ink)">费用</div>
+            <div style="font-size:18px;font-weight:700">$${(d.cost_usd||0).toFixed(4)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:4px">近 7 天费用趋势</div>
+        <div style="display:flex;gap:4px;height:80px;align-items:flex-end;padding:4px;background:var(--cream-2);border:1px solid var(--ink)">
+          ${barsHtml || '<div style="color:var(--dim);font-style:italic;margin:auto">暂无数据</div>'}
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">今日按 agent 拆分</div>
+          <table style="width:100%;font-size:12px;border-collapse:collapse">
+            <thead><tr style="background:var(--cream-2)"><th style="padding:3px 6px;text-align:left">Agent</th><th style="padding:3px 6px;text-align:right">次</th><th style="padding:3px 6px;text-align:right">tokens</th><th style="padding:3px 6px;text-align:right">费用</th></tr></thead>
+            <tbody>${agentRows || '<tr><td colspan="4" style="padding:8px;color:var(--dim);text-align:center;font-style:italic">无</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">MCP tool 调用</div>
+          <table style="width:100%;font-size:12px;border-collapse:collapse">
+            <thead><tr style="background:var(--cream-2)"><th style="padding:3px 6px;text-align:left">Tool</th><th style="padding:3px 6px;text-align:right">次</th><th style="padding:3px 6px;text-align:right">错</th></tr></thead>
+            <tbody>${toolRows || '<tr><td colspan="3" style="padding:8px;color:var(--dim);text-align:center;font-style:italic">无</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="margin-top:14px;font-size:11px;color:var(--dim);text-align:center">数字每 30 秒自动刷新，本地模型按 $0 计</div>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelector('#usage-close').onclick = close;
+  modal.onclick = (e) => { if (e.target === modal) close(); };
 };
 
 // ─── 同事管理面板 ─────────────────────

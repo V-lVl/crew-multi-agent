@@ -354,6 +354,14 @@ def main():
         run(FetchServer())
     elif kind == "shell":
         run(ShellServer())
+    elif kind == "memory":
+        # memory 走独立文件的 JSON-RPC 循环
+        db_path = sys.argv[2] if len(sys.argv) > 2 else "memory.db"
+        # 复用它自己的 main：把 argv 重置成 [prog, db_path]
+        sys.argv = [sys.argv[0], db_path]
+        from mcp_memory_server import main as _mem_main
+        _mem_main()
+        return
     else:
         print(f"未知 server 类型：{kind}", file=sys.stderr)
         sys.exit(1)

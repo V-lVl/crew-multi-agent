@@ -49,29 +49,32 @@ class MCPServerEntry:
     def __init__(self, config: dict):
         self.name: str = config["name"]
         self.enabled: bool = config.get("enabled", True)
-        self.command: str = config["command"]
+        self.command: str = config.get("command", "")
         self.args: list[str] = list(config.get("args", []))
         self.env: dict = dict(config.get("env", {}))
         self.description: str = config.get("description", "")
-        self.request_timeout: float = float(config.get("request_timeout", 30.0))
-
-        self.client: Optional[MCPClient] = None
-        self.tools: list[dict] = []         # 缓存 tools/list 结果
+        self.request_timeout: float = config.get("request_timeout", 30.0)
+        # HTTP transport 专用
+        self.url: str = config.get("url", "")
+        self.auth_bearer: str = config.get("auth_bearer", "")
+        # 运行时
+        self.client = None
+        self.tools: list[dict] = []
+        self.status: str = "stopped"
         self.last_error: str = ""
-        self.status: str = "stopped"        # stopped | starting | running | dead
 
     def to_public(self) -> dict:
-        """返回可通过 API 暴露的信息（不含敏感 env）。"""
         return {
             "name": self.name,
             "enabled": self.enabled,
             "command": self.command,
             "args": self.args,
+            "url": self.url,
+            "transport": "http" if self.url else "stdio",
             "description": self.description,
             "status": self.status,
             "last_error": self.last_error,
-            "tools": [{"name": t["name"], "description": t.get("description", "")}
-                      for t in self.tools],
+            "tools_count": len(self.tools),
         }
 
 
@@ -84,6 +87,21 @@ class MCPRegistry:
         self.agent_tools: dict[str, list[str]] = {}    # agent → glob patterns
         self._lock = asyncio.Lock()
         self._loaded = False
+        # tool 调用统计：{qualified_name: {calls, errors, last_ts}}
+        self._call_stats: dict[str, dict] = {}
+
+    def tool_call_stats(self) -> dict:
+        """返回 tool 调用次数快照。"""
+        import copy
+        return copy.deepcopy(self._call_stats)
+
+    def _record_call(self, qualified: str, ok: bool) -> None:
+        s = self._call_stats.setdefault(qualified, {"calls": 0, "errors": 0, "last_ts": 0})
+        s["calls"] += 1
+        if not ok:
+            s["errors"] += 1
+        import time as _t
+        s["last_ts"] = _t.time()
 
     # ─── 配置加载 ─────────────────────────────────
 
@@ -103,6 +121,26 @@ class MCPRegistry:
                 json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
             )
             logger.info(f"已写入默认 mcp_servers.json 到 {self.config_path}")
+
+        # v3.0 迁移：老配置里若没有 memory server，自动补上
+        existing_names = {s.get("name") for s in data.get("servers", [])}
+        default = self._default_config()
+        migrated = False
+        for def_srv in default.get("servers", []):
+            if def_srv["name"] not in existing_names and def_srv["name"] in ("memory",):
+                data.setdefault("servers", []).append(def_srv)
+                migrated = True
+                logger.info(f"[migrate] 补上默认 server: {def_srv['name']}")
+        if migrated:
+            # 顺便补上 memory.* 的权限
+            at = data.setdefault("agent_tools", {})
+            star = list(at.get("*", []))
+            if "memory.*" not in star:
+                star.append("memory.*")
+                at["*"] = star
+            self.config_path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
 
         # 展开环境变量
         for s in data.get("servers", []):
@@ -197,12 +235,21 @@ class MCPRegistry:
                     "env": {},
                     "description": "受限 shell 命令白名单执行（只读命令，如 ls/git/curl）",
                 },
+                {
+                    "name": "memory",
+                    "enabled": True,
+                    "command": "python",
+                    "args": [str(script_dir / "mcp_builtin_servers.py"),
+                             "memory", str(Path(self.config_path).parent / "memory.db")],
+                    "env": {},
+                    "description": "本地全文检索 + 记忆存储（FTS5，零依赖）",
+                },
             ],
             "agent_tools": {
-                "*": ["time.*", "fetch.*"],           # 所有 agent 默认能查时间 + 抓网页
+                "*": ["time.*", "fetch.*", "memory.*"],  # 所有 agent 默认能查时间 / 抓网页 / 记忆
                 "Ash": ["*"],                          # 开发能用所有工具
                 "Foreman": ["*"],                      # 调度员也全权
-                "Owl": ["filesystem.read_file", "shell.run_command"],  # 测试只读
+                "Owl": ["filesystem.read_file", "shell.run_command", "memory.*"],
             },
         }
 
@@ -229,6 +276,36 @@ class MCPRegistry:
             command = entry.command
             args = list(entry.args)
             is_frozen = getattr(_sys, "frozen", False)
+
+            # ─── HTTP transport 分支 ────────────────────────────
+            # config 里若有 "url" 字段（或 command == "http"），走 HTTP client
+            if getattr(entry, "url", None) or command == "http":
+                from mcp_http_client import HTTPMCPClient
+                url = getattr(entry, "url", None) or (args[0] if args else "")
+                if not url:
+                    entry.status = "dead"
+                    entry.last_error = "HTTP transport 需要 url 字段"
+                    return False, entry.last_error
+                auth = getattr(entry, "auth_bearer", "") or entry.env.get("MCP_AUTH_BEARER", "")
+                client = HTTPMCPClient(
+                    name=entry.name,
+                    url=url,
+                    auth_bearer=auth,
+                    request_timeout=entry.request_timeout,
+                )
+                try:
+                    await client.start()
+                    tools = await client.list_tools()
+                    entry.client = client
+                    entry.tools = tools
+                    entry.status = "running"
+                    logger.info(f"[mcp] {name} (HTTP) 启动成功，{len(tools)} 个工具")
+                    return True, f"启动成功，{len(tools)} 个工具"
+                except Exception as e:
+                    entry.status = "dead"
+                    entry.last_error = str(e)
+                    logger.error(f"[mcp] {name} (HTTP) 启动失败：{e}")
+                    return False, str(e)
 
             if command == "python":
                 if is_frozen and args and "mcp_builtin_servers" in args[0]:
@@ -385,17 +462,59 @@ class MCPRegistry:
         assert entry.client is not None
         try:
             result = await entry.client.call_tool(tool_name, arguments)
+            self._record_call(qualified_name, ok=True)
+            return result
         except MCPError:
+            self._record_call(qualified_name, ok=False)
             raise
         except Exception as e:
             # 底层出问题，把 client 标死，下次重启
             entry.status = "dead"
             entry.last_error = str(e)
+            self._record_call(qualified_name, ok=False)
             raise MCPError(-32000, f"调用 {qualified_name} 失败：{e}")
 
-        return result
-
     # ─── 状态导出 ─────────────────────────────────
+
+    async def list_resources(self, server_name: str) -> list[dict]:
+        entry = self.servers.get(server_name)
+        if not entry or not entry.client or not entry.client.is_alive():
+            return []
+        try:
+            return await entry.client.list_resources()
+        except Exception:
+            return []
+
+    async def read_resource(self, server_name: str, uri: str) -> dict:
+        entry = self.servers.get(server_name)
+        if not entry:
+            raise MCPError(-32601, f"未知 server：{server_name}")
+        if entry.status != "running" or not (entry.client and entry.client.is_alive()):
+            ok, msg = await self.start(server_name)
+            if not ok:
+                raise MCPError(-32000, f"server {server_name} 未运行且重启失败：{msg}")
+        assert entry.client is not None
+        return await entry.client.read_resource(uri)
+
+    async def list_prompts(self, server_name: str) -> list[dict]:
+        entry = self.servers.get(server_name)
+        if not entry or not entry.client or not entry.client.is_alive():
+            return []
+        try:
+            return await entry.client.list_prompts()
+        except Exception:
+            return []
+
+    async def get_prompt(self, server_name: str, name: str, arguments: dict | None = None) -> dict:
+        entry = self.servers.get(server_name)
+        if not entry:
+            raise MCPError(-32601, f"未知 server：{server_name}")
+        if entry.status != "running" or not (entry.client and entry.client.is_alive()):
+            ok, msg = await self.start(server_name)
+            if not ok:
+                raise MCPError(-32000, f"server {server_name} 未运行且重启失败：{msg}")
+        assert entry.client is not None
+        return await entry.client.get_prompt(name, arguments or {})
 
     def list_servers(self) -> list[dict]:
         return [s.to_public() for s in self.servers.values()]

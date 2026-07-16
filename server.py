@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 import supervisor as sv  # 任务调度、招人、Hermes 执行、审批
 
@@ -45,7 +45,7 @@ ATTACHMENTS_DIR = DATA_DIR / "attachments"
 
 def load_config() -> dict:
     """读取用户配置（向导写、后端读）。缺项走默认。"""
-    default = {"permission_level": "balanced", "onboarded": False}
+    default = {"permission_level": "balanced", "onboarded": False, "redact_sensitive": True}
     if CONFIG_PATH.exists():
         try:
             return default | json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -209,11 +209,27 @@ async def call_llm(
       · 记录 usage 到 team.db 的 llm_usage 表
     """
     import pricing as _pricing
+    import redact as _redact
 
     pid, key, endpoint, model = _get_current_llm()
     p = _providers.get_provider(pid) or {}
     protocol = p.get("protocol", "openai")
     key_optional = p.get("key_optional", False)
+
+    # ─── 敏感字段脱敏（默认开，可关）───
+    if CONFIG.get("redact_sensitive", True):
+        redact_counts = {"phone": 0, "id": 0, "email": 0, "key": 0, "bank": 0}
+        redacted_msgs = []
+        for m in messages:
+            new_content, c = _redact.redact(m.get("content", ""))
+            for k, v in c.items():
+                redact_counts[k] += v
+            redacted_msgs.append({**m, "content": new_content})
+        messages = redacted_msgs
+        total = _redact.total(redact_counts)
+        if total > 0:
+            hits = ", ".join(f"{k}={v}" for k, v in redact_counts.items() if v > 0)
+            print(f"[redact] {agent_name or 'llm'}: 脱敏 {total} 处 ({hits})")
 
     # ─── 上下文裁剪 ───
     max_ctx = _pricing.get_max_context(pid)
@@ -226,7 +242,7 @@ async def call_llm(
         """返回 (text, usage_dict)。usage_dict = {prompt, completion, cost, retries, ok}"""
         # key 允许空的 provider（本地部署）不要求 key
         if not key and not key_optional:
-            return "[未配置 API key。点右上『?』或首次向导里填一个。]", {"ok": False}
+            return f"[{pid} 还没配 API key。点右上『⚙』或首次向导里填一个]", {"ok": False}
 
         last_error = ""
         for attempt in range(3):  # 最多重试 3 次
@@ -292,7 +308,20 @@ async def call_llm(
                         import time as _t
                         _t.sleep(2 ** attempt)  # 1s, 2s, 4s
                         continue
-                return f"[{pid} {last_error}]", {"ok": False, "retries": attempt, "error": last_error}
+                # 友好化文案
+                if code == 429:
+                    friendly = f"[{pid} 请求太密，重试 3 次仍限流。等一分钟或换 provider]"
+                elif code == 401 or code == 403:
+                    friendly = f"[{pid} API key 无效或权限不足（HTTP {code}）。到 ⚙ 设置里更新 key]"
+                elif code == 404:
+                    friendly = f"[{pid} 端点或 model 不存在（HTTP 404）。检查 model 名，或该 model 是否已被 provider 下线]"
+                elif code == 400:
+                    friendly = f"[{pid} 请求格式错（HTTP 400）：{body_text[:100]}]"
+                elif 500 <= code < 600:
+                    friendly = f"[{pid} 服务端故障（HTTP {code}），已重试 3 次仍失败。稍后再试或换 provider]"
+                else:
+                    friendly = f"[{pid} HTTP {code}: {body_text[:100]}]"
+                return friendly, {"ok": False, "retries": attempt, "error": last_error}
             except urllib.error.URLError as e:
                 last_error = f"{e.reason}"
                 if attempt < 2:
@@ -300,10 +329,17 @@ async def call_llm(
                     _t.sleep(2 ** attempt)
                     continue
                 if p.get("local"):
-                    return f"[连不上 {pid} ({endpoint})。检查本地服务是否启动：{e.reason}]", {"ok": False, "error": last_error}
-                return f"[{pid} 连接失败: {e.reason}]", {"ok": False, "error": last_error}
+                    return f"[连不上本地 {pid} ({endpoint})。检查服务是否启动：{e.reason}]", {"ok": False, "error": last_error}
+                return f"[{pid} 连接失败：{e.reason}。检查网络或代理]", {"ok": False, "error": last_error}
+            except TimeoutError as e:
+                last_error = "timeout"
+                if attempt < 2:
+                    import time as _t
+                    _t.sleep(2 ** attempt)
+                    continue
+                return f"[{pid} 请求超时（60 秒无响应）。模型可能太慢或网络卡]", {"ok": False, "error": last_error}
             except Exception as e:
-                return f"[{pid} 调用出错: {e}]", {"ok": False, "error": str(e)}
+                return f"[{pid} 调用出错：{e}]", {"ok": False, "error": str(e)}
 
         return f"[{pid} 重试 3 次后仍失败: {last_error}]", {"ok": False, "error": last_error}
 
@@ -612,7 +648,7 @@ async def route_message(text: str) -> str:
     return active[0]
 
 
-async def agent_reply(agent: str) -> None:
+async def agent_reply(agent: str, _chain_depth: int = 0) -> None:
     async with room.lock:
         await room.push_typing(agent, True)
         try:
@@ -620,6 +656,13 @@ async def agent_reply(agent: str) -> None:
         finally:
             await room.push_typing(agent, False)
         await room.push_message("agent", agent, reply)
+    # ─── Agent → Agent 定向 @ 转派 ────────────────────────────
+    # 深度 <3 时检查 reply 里有没有 @ 另一个在场 agent
+    if _chain_depth < 3:
+        mentioned = detect_mention(reply)
+        if mentioned and mentioned != agent and mentioned in room.roster:
+            await asyncio.sleep(0.2)
+            room.track_task(asyncio.create_task(agent_reply(mentioned, _chain_depth + 1)))
 
 
 # ─── MCP tool call 循环 ─────────────────────────────────────
@@ -1072,6 +1115,48 @@ async def get_topic(topic_id: int) -> dict:
     return {"topic": topic, "messages": msgs}
 
 
+@app.get("/api/topics/{topic_id}/export")
+async def export_topic(topic_id: int, fmt: str = "md") -> Response:
+    """导出会话为 markdown / json。"""
+    r = db_load_topic(topic_id)
+    if not r:
+        raise HTTPException(404)
+    topic, msgs = r
+    title = topic.get("title", f"topic-{topic_id}")
+    if fmt == "json":
+        body = json.dumps({"topic": topic, "messages": msgs}, ensure_ascii=False, indent=2)
+        return Response(
+            content=body,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{topic_id}.json"'},
+        )
+    # 默认 markdown
+    lines = [f"# {title}", ""]
+    if topic.get("summary"):
+        lines.append(f"> {topic['summary']}")
+        lines.append("")
+    for m in msgs:
+        role = m.get("role", "")
+        name = m.get("name", "")
+        content = m.get("content", "")
+        ts = m.get("ts", 0)
+        import datetime as _dt
+        ts_str = _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        prefix = {"user": "🧑", "agent": "🤖", "system": "⚙"}.get(role, "·")
+        lines.append(f"### {prefix} {name}  <sub>{ts_str}</sub>")
+        lines.append("")
+        lines.append(content)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+    body = "\n".join(lines)
+    return Response(
+        content=body,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{topic_id}.md"'},
+    )
+
+
 @app.delete("/api/topics/{topic_id}")
 async def delete_topic(topic_id: int) -> dict:
     db_delete_topic(topic_id)
@@ -1343,6 +1428,20 @@ async def upload_attachment(payload: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/api/ollama/models")
+async def ollama_models() -> dict:
+    """探测本地 Ollama 有没有起 + 拉已装 model 列表。"""
+    def _probe():
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                names = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+                return {"ok": True, "models": names, "endpoint": "http://127.0.0.1:11434"}
+        except Exception as e:
+            return {"ok": False, "error": str(e), "models": []}
+    return await asyncio.to_thread(_probe)
+
+
 # ─── MCP API（v2.0） ────────────────────────────────────────
 @app.get("/api/mcp/servers")
 async def mcp_list_servers() -> dict:
@@ -1377,6 +1476,36 @@ async def mcp_all_tools() -> dict:
 async def mcp_tools_for_agent(agent: str) -> dict:
     """某个 agent 能看到的工具（权限过滤后）。"""
     return {"agent": agent, "tools": mcp_registry.tools_for_agent(agent)}
+
+
+@app.get("/api/mcp/resources/{server_name}")
+async def mcp_list_resources(server_name: str) -> dict:
+    """列一个 server 的 resources。"""
+    return {"server": server_name, "resources": await mcp_registry.list_resources(server_name)}
+
+
+@app.get("/api/mcp/resources/{server_name}/read")
+async def mcp_read_resource(server_name: str, uri: str) -> dict:
+    """读 resource。uri 作为 query param 传。"""
+    try:
+        return await mcp_registry.read_resource(server_name, uri)
+    except _MCPError as e:
+        raise HTTPException(400, f"读 resource 失败：{e}")
+
+
+@app.get("/api/mcp/prompts/{server_name}")
+async def mcp_list_prompts(server_name: str) -> dict:
+    return {"server": server_name, "prompts": await mcp_registry.list_prompts(server_name)}
+
+
+@app.post("/api/mcp/prompts/{server_name}/get")
+async def mcp_get_prompt(server_name: str, payload: dict) -> dict:
+    name = payload.get("name", "")
+    args = payload.get("arguments", {}) or {}
+    try:
+        return await mcp_registry.get_prompt(server_name, name, args)
+    except _MCPError as e:
+        raise HTTPException(400, f"取 prompt 失败：{e}")
 
 
 @app.post("/api/mcp/agent_tools")
@@ -1438,9 +1567,178 @@ async def set_agent_permission(payload: dict) -> dict:
     return {"ok": True, "per_agent": perms}
 
 
+@app.get("/api/marketplace")
+async def marketplace_list() -> dict:
+    """从 GitHub raw 拉最新 templates.json。失败时用本地打包版兜底。"""
+    urls = [
+        "https://raw.githubusercontent.com/V-lVl/crew-multi-agent/main/marketplace/templates.json",
+    ]
+    def _fetch():
+        for u in urls:
+            try:
+                req = urllib.request.Request(u, headers={"User-Agent": "Crew/3.0"})
+                with urllib.request.urlopen(req, timeout=6) as r:
+                    return json.loads(r.read().decode("utf-8", "ignore"))
+            except Exception:
+                continue
+        return None
+    templates = await asyncio.to_thread(_fetch)
+    if templates is None:
+        # 兜底：本地打包版里的 templates.json
+        local = ASSETS_DIR / "marketplace" / "templates.json"
+        if local.exists():
+            templates = json.loads(local.read_text(encoding="utf-8"))
+        else:
+            templates = []
+    return {"templates": templates, "source": "remote" if templates else "empty"}
+
+
+@app.post("/api/marketplace/install")
+async def marketplace_install(payload: dict) -> dict:
+    """安装一个模板：把 agents 加到 dynamic_agents + tool patterns 合并到 mcp_registry。"""
+    template = payload.get("template") or {}
+    agents = template.get("agents", []) or []
+    tool_map = template.get("mcp_agent_tools", {}) or {}
+
+    if not agents:
+        raise HTTPException(400, "模板里没有 agents")
+
+    # 加 dynamic agents（沿用现有加同事流程）
+    added = []
+    dyn = load_dynamic_agents()
+    for a in agents:
+        try:
+            name = str(a.get("name", "")).strip()
+            role = str(a.get("role", "")).strip()
+            system = str(a.get("system", "")).strip()
+            if not name or not role or not system:
+                continue
+            if any(c in name for c in ' \t\n"\'`'):
+                continue
+            profile = {
+                "role": role,
+                "emoji": str(a.get("emoji", "")).strip() or "●",
+                "color": str(a.get("color", "")).strip() or "#6b7280",
+                "default_on": bool(a.get("default_on", False)),
+                "system": system,
+            }
+            if name in AGENTS and name not in dyn:
+                # 与内置角色冲突，跳过
+                continue
+            dyn[name] = profile
+            AGENTS[name] = profile
+            added.append(name)
+        except Exception as e:
+            logger.error(f"加 agent {a.get('name')} 失败：{e}")
+    save_dynamic_agents(dyn)
+
+    # 合并 mcp agent_tools
+    for agent, patterns in tool_map.items():
+        existing = list(mcp_registry.agent_tools.get(agent, []))
+        for p in patterns:
+            if p not in existing:
+                existing.append(p)
+        mcp_registry.agent_tools[agent] = existing
+    mcp_registry.save_config()
+
+    return {"ok": True, "added_agents": added}
+
+
+@app.get("/api/network")
+async def network_info() -> dict:
+    """返回当前监听 host + 本机 LAN IP，用户判断能不能被其他机器连。"""
+    import socket as _s
+    lan_ip = ""
+    try:
+        s = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    # server 目前的 host 由 launcher 决定；只报告当前实际 IP
+    return {
+        "lan_ip": lan_ip,
+        "url_local": "http://127.0.0.1:8765/",
+        "url_lan": f"http://{lan_ip}:8765/" if lan_ip else "",
+    }
+
+
+@app.get("/api/workspace")
+async def workspace_current() -> dict:
+    """当前 workspace + 所有可用 workspace 列表。"""
+    root = os.environ.get("CREW_DATA_ROOT", "")
+    active = os.environ.get("CREW_WORKSPACE", "default")
+    workspaces = []
+    if root:
+        ws_dir = Path(root) / "workspaces"
+        if ws_dir.exists():
+            workspaces = sorted(d.name for d in ws_dir.iterdir() if d.is_dir())
+    if "default" not in workspaces:
+        workspaces = ["default"] + workspaces
+    return {"active": active, "workspaces": workspaces, "root": root}
+
+
+@app.post("/api/workspace/switch")
+async def workspace_switch(payload: dict) -> dict:
+    """切换 workspace。只改标记文件，需要重启 crew.exe 生效。"""
+    import re as _re
+    name = str(payload.get("name", "")).strip()
+    if not _re.match(r"^[A-Za-z0-9_-]{1,32}$", name):
+        raise HTTPException(400, "workspace 名只允许字母/数字/-/_，1-32 字符")
+    root = os.environ.get("CREW_DATA_ROOT", "")
+    if not root:
+        raise HTTPException(500, "CREW_DATA_ROOT 环境变量未设置（源码模式暂不支持切换）")
+    # 建目录
+    (Path(root) / "workspaces" / name).mkdir(parents=True, exist_ok=True)
+    # 写标记
+    (Path(root) / "active_workspace").write_text(name, encoding="utf-8")
+    return {"ok": True, "active": name, "need_restart": True}
+
+
 @app.get("/api/usage/today")
 async def get_usage_today() -> dict:
     return db_usage_today()
+
+
+@app.get("/api/usage/timeseries")
+async def get_usage_timeseries(days: int = 7) -> dict:
+    """按日聚合最近 N 天的 tokens / cost。"""
+    import time as _t
+    days = max(1, min(days, 90))
+    since = _t.time() - days * 86400
+    with db() as c:
+        rows = c.execute(
+            "SELECT CAST(strftime('%s', datetime(ts, 'unixepoch', 'localtime', 'start of day'), 'utc') AS INTEGER) as day, "
+            "COALESCE(SUM(prompt_tokens+completion_tokens),0) as tokens, "
+            "COALESCE(SUM(cost_usd),0) as cost, "
+            "COUNT(*) as calls "
+            "FROM llm_usage WHERE ts >= ? GROUP BY day ORDER BY day",
+            (since,),
+        ).fetchall()
+    return {"days": days, "series": [dict(r) for r in rows]}
+
+
+@app.get("/api/usage/by_provider")
+async def get_usage_by_provider(days: int = 7) -> dict:
+    import time as _t
+    since = _t.time() - days * 86400
+    with db() as c:
+        rows = c.execute(
+            "SELECT provider, model, "
+            "SUM(prompt_tokens) as prompt, SUM(completion_tokens) as completion, "
+            "SUM(cost_usd) as cost, COUNT(*) as calls "
+            "FROM llm_usage WHERE ts >= ? GROUP BY provider, model ORDER BY cost DESC",
+            (since,),
+        ).fetchall()
+    return {"days": days, "rows": [dict(r) for r in rows]}
+
+
+@app.get("/api/usage/mcp_tools")
+async def get_usage_mcp_tools(days: int = 7) -> dict:
+    """MCP tool 调用统计——从 llm_usage 无法拿，改用 registry 的调用计数（若有）。"""
+    stats = getattr(mcp_registry, "tool_call_stats", lambda: {})()
+    return {"days": days, "tools": stats}
 
 
 @app.post("/api/providers/test")
@@ -1622,9 +1920,19 @@ async def delete_dynamic_agent(name: str) -> dict:
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
+    # 多人协作：从 query 拿 user_name
+    user_name = ws.query_params.get("user", "").strip() or "我"
+    if len(user_name) > 24:
+        user_name = user_name[:24]
+    ws.state.user_name = user_name  # type: ignore
     room.clients.add(ws)
+    # 广播新用户加入
+    await room.broadcast({"type": "presence", "event": "join", "user": user_name,
+                          "online": [getattr(c.state, "user_name", "我") for c in room.clients]})
     # 一上来推当前状态
-    await ws.send_json({"type": "state", "topic_id": room.topic_id, "roster": room.roster})
+    await ws.send_json({"type": "state", "topic_id": room.topic_id, "roster": room.roster,
+                        "self_user": user_name,
+                        "online": [getattr(c.state, "user_name", "我") for c in room.clients]})
     for m in room.history:
         payload = {"type": "message", **m, "topic_id": room.topic_id}
         if m["role"] == "agent" and m["name"] in AGENTS:
@@ -1715,7 +2023,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
             attachments_data = data.get("attachments") or []  # 前端上传后带过来的元数据数组
             if not text and not attachments_data:
                 continue
-            user_name = data.get("user") or "我"
+            # 用户名优先用 WS 连接时协商的（多人协作），fallback 消息里的
+            user_name = getattr(ws.state, "user_name", None) or data.get("user") or "我"
             channel = data.get("channel") or "team"  # "team" | "supervisor"
 
             if text == "/clear":
@@ -1782,6 +2091,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
         pass
     finally:
         room.clients.discard(ws)
+        try:
+            await room.broadcast({"type": "presence", "event": "leave",
+                                  "user": getattr(ws.state, "user_name", "?"),
+                                  "online": [getattr(c.state, "user_name", "我") for c in room.clients]})
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
